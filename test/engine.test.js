@@ -358,3 +358,81 @@ test('autoPlay：门槛为 3 张组合时打出最小 3 张可压组合', () => 
   assert.strictEqual(room.topCard.rank, '6', '托管打最小的 3 张 6（先于 3 张 7）');
   assert.strictEqual(room.topCount, 3);
 });
+
+// ---- BUG-007：功能牌开轮（topCard=null 但 tablePile 非空）----
+// computeLegalMoves 曾用 tablePile.length === 0 判定开轮，开轮打出 A/2 后
+// topCard 仍为 null → 访问 room.topCard.kind 抛 TypeError → 整桌卡死。
+
+test('BUG-007：开轮打出 A 后，下家 computeLegalMoves 不抛异常且 opening=true', () => {
+  const { room, list } = makeGame(); // 桌面为空 = 开轮
+  const a = list[0].hand.find((c) => c.rank === 'A');
+  playCard(room, list[0].id, [a.id]);
+
+  assert.strictEqual(room.topCard, null, 'A 不设置门槛牌');
+  assert.strictEqual(room.tablePile.length, 1, 'A 仍留在桌面');
+  const nextId = room.currentPlayerId;
+  assert.strictEqual(nextId, list[1].id, 'A 不改变方向，轮到下家');
+
+  assert.doesNotThrow(() => computeLegalMoves(room, nextId), '开轮打 A 后不得抛 TypeError');
+  const moves = computeLegalMoves(room, nextId);
+  assert.strictEqual(moves.opening, true, '无门槛牌 → 仍是开轮，可任意出牌');
+  assert.ok(moves.beats.length > 0, '下家任意单张可出');
+});
+
+test('BUG-007：开轮打出 2 → 方向反转，下家仍为 opening（topCard 保持 null）', () => {
+  const { room, list } = makeGame();
+  const two = list[0].hand.find((c) => c.rank === '2');
+  playCard(room, list[0].id, [two.id]);
+
+  assert.strictEqual(room.direction, -1, '2 反转方向');
+  assert.strictEqual(room.topCard, null, '2 不设置门槛牌');
+  assert.strictEqual(room.currentPlayerId, list[2].id, '反转后由原上家（seat 2）接续');
+  assert.doesNotThrow(() => computeLegalMoves(room, list[2].id));
+  assert.strictEqual(computeLegalMoves(room, list[2].id).opening, true);
+});
+
+test('BUG-007：连续两个 2 回到原方向，topCard 仍为 null 且仍是开轮', () => {
+  const { room, list } = makeGame();
+  const two1 = list[0].hand.find((c) => c.rank === '2');
+  playCard(room, list[0].id, [two1.id]);
+  assert.strictEqual(room.currentPlayerId, list[2].id);
+
+  list[2].hand.push(ACTION('2'));
+  const two2 = list[2].hand.find((c) => c.rank === '2');
+  playCard(room, list[2].id, [two2.id]);
+
+  assert.strictEqual(room.direction, 1, '连续两个 2 回到原方向');
+  assert.strictEqual(room.topCard, null, '2 始终不设置门槛牌');
+  assert.strictEqual(room.tablePile.length, 2, '两张 2 都留在桌面');
+  assert.strictEqual(room.currentPlayerId, list[0].id, '再次反转后回到 seat 0');
+  assert.strictEqual(computeLegalMoves(room, list[0].id).opening, true);
+});
+
+test('BUG-007：功能牌开轮后，有牌可出的玩家收牌仍抛 MUST_PLAY（不得误判为可收）', () => {
+  const { room, list } = makeGame();
+  const a = list[0].hand.find((c) => c.rank === 'A');
+  playCard(room, list[0].id, [a.id]);
+
+  // 下家手上有 4/6/5/10，无门槛 → 都能出，因此不允许收牌
+  assert.throws(() => pickUp(room, list[1].id), (e) => e.code === 'MUST_PLAY');
+  assert.strictEqual(room.tablePile.length, 1, '被拒后桌面不变');
+});
+
+test('BUG-007：开轮打出的 A 留在桌面，下一次收牌时进入败牌堆', () => {
+  const { room, list } = makeGame();
+  const a = list[0].hand.find((c) => c.rank === 'A');
+  playCard(room, list[0].id, [a.id]);
+  assert.ok(room.tablePile.some((c) => c.id === a.id), 'A 在桌面上');
+
+  const p1 = list[1];
+  p1.hand = []; // 无牌可出
+  room.drawPile = [MONSTER('K'), MONSTER('K'), MONSTER('K')];
+  const ret = pickUp(room, p1.id);
+
+  assert.strictEqual(ret.action, 'pickedUp');
+  assert.ok(p1.penaltyPile.some((c) => c.id === a.id), '桌面上的 A 计入收牌者败牌堆');
+  assert.strictEqual(p1.penaltyPile.length, 1);
+  assert.strictEqual(room.tablePile.length, 0, '桌面清空');
+  assert.strictEqual(room.topCard, null);
+  assert.strictEqual(room.currentPlayerId, p1.id, '收牌者成为新一轮先出者');
+});
