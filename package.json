@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "西游斗牌 - 局域网多人回合制纸牌游戏",
   "main": "server.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node server.js",
     "test": "node --test test/*.test.js"

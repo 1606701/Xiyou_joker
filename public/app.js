@@ -5,15 +5,9 @@ const $ = (sel) => document.querySelector(sel);
 
 const AVATARS = ['🐵', '🐷', '🦁', '🐉', '🐰', '🦊'];
 const KIND_CLS = { monster: 'monster', disciple: 'disciple', master: 'master', action: 'action' };
-const RANK_SHOW = { SJ: '小王', BJ: '大王' };
-// 牌面对应的西游名称（与 lib/cards.js 保持一致；客户端无模块系统，故本地维护一份）
-const CARD_NAMES = {
-  '3': '沙僧', '5': '孙悟空', '8': '八戒', '10': '唐僧',
-  '4': '小妖', '6': '黑熊精', '7': '黄风怪', '9': '白骨精',
-  J: '红孩儿', Q: '牛魔王', K: '青牛精',
-  SJ: '六耳猕猴', BJ: '金翅大鹏',
-  A: '跳过', '2': '反转',
-};
+// 牌面名称 / 大小王显示文本统一由服务端 GET /api/cards 下发（唯一来源：lib/cards.js 的 CARD_NAMES），
+// 前端不再维护第二份表，改牌名只需改一处（BUG-006）。拉取失败时退化为显示点数原文。
+const FALLBACK_RANK_SHOW = { SJ: '小王', BJ: '大王' };
 const ERROR_TEXT = {
   ROOM_NOT_FOUND: '房间不存在',
   ROOM_FULL: '房间已满（最多 6 人）',
@@ -27,6 +21,7 @@ const ERROR_TEXT = {
   BAD_PHASE: '当前状态不允许该操作',
   PLAYER_NOT_FOUND: '玩家不存在',
   NOT_ENOUGH: '至少需要 3 名玩家',
+  BAD_TOKEN: '重连凭证失效，请重新加入房间',
   DEFAULT: '操作失败',
 };
 
@@ -36,6 +31,8 @@ const S = {
   myTurn: null,       // { legalMoves, deadline }
   selectedIds: [],     // 选中的手牌 id（可多选同点牌组成组合）
   nickname: '',
+  cardNames: {},                        // 由 GET /api/cards 覆盖（BUG-006）
+  rankShow: FALLBACK_RANK_SHOW,
 };
 
 /* ---------- 工具 ---------- */
@@ -66,11 +63,12 @@ function connectSocket() {
 
   S.socket.on('connect', () => {
     $('#connBanner').classList.add('hidden');
-    // 刷新页面 / 断线恢复：尝试回原座位
+    // 刷新页面 / 断线恢复：尝试回原座位（需 roomCode + playerId + 服务端签发的 rejoinToken）
     const roomCode = sessionStorage.getItem('roomCode');
     const playerId = sessionStorage.getItem('playerId');
+    const rejoinToken = sessionStorage.getItem('rejoinToken');
     if (roomCode && playerId) {
-      S.socket.emit('rejoin', { roomCode, playerId });
+      S.socket.emit('rejoin', { roomCode, playerId, rejoinToken: rejoinToken || '' });
     }
   });
 
@@ -78,9 +76,10 @@ function connectSocket() {
     $('#connBanner').classList.remove('hidden');
   });
 
-  S.socket.on('roomJoined', ({ roomCode, youId, state }) => {
+  S.socket.on('roomJoined', ({ roomCode, youId, state, rejoinToken }) => {
     sessionStorage.setItem('roomCode', roomCode);
     sessionStorage.setItem('playerId', youId);
+    if (rejoinToken) sessionStorage.setItem('rejoinToken', rejoinToken);
     S.state = state;
     S.myTurn = null;
     S.selectedIds = [];
@@ -115,6 +114,10 @@ function connectSocket() {
 
   S.socket.on('error', ({ code }) => {
     toast(ERROR_TEXT[code] || ERROR_TEXT.DEFAULT);
+    // 重连令牌失效（如房间已回收）：清掉本地凭证，回到首页重新加入
+    if (code === 'BAD_TOKEN' || code === 'PLAYER_NOT_FOUND' || code === 'ROOM_NOT_FOUND') {
+      if (!S.state) resetToHome();
+    }
   });
 
   S.socket.on('roomClosed', () => {
@@ -129,6 +132,7 @@ function resetToHome() {
   S.state = null; S.myTurn = null; S.selectedIds = [];
   sessionStorage.removeItem('roomCode');
   sessionStorage.removeItem('playerId');
+  sessionStorage.removeItem('rejoinToken');
   showView('view-home');
 }
 
@@ -225,8 +229,8 @@ function renderSeats(st) {
 }
 
 function cardHtml(card, extraCls = '') {
-  const rank = RANK_SHOW[card.rank] || card.rank;
-  const name = CARD_NAMES[card.rank] || rank;
+  const rank = S.rankShow[card.rank] || card.rank;
+  const name = S.cardNames[card.rank] || rank;
   return `<div class="card ${extraCls}" data-id="${escapeHtml(card.id)}">
     <span class="rank">${rank}</span>
     <span class="suit">${card.suit || ''}</span>
@@ -381,8 +385,29 @@ function bindEvents() {
 }
 
 /* ---------- 启动 ---------- */
+/**
+ * 拉取牌面名称（唯一来源 lib/cards.js）。成功后重绘一次，避免出现「先显示点数再变成角色名」的长期状态。
+ * 失败（离线/接口不可用）只是退化为显示点数，不影响出牌流程。
+ */
+async function loadCardNames() {
+  try {
+    const res = await fetch('/api/cards');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data && data.names) S.cardNames = data.names;
+    if (data && data.rankShow) S.rankShow = data.rankShow;
+    if (S.state) {
+      if (S.state.phase === 'waiting') renderRoom();
+      else renderGame();
+    }
+  } catch (e) {
+    console.warn('[西游斗牌] 牌面名称拉取失败，暂以点数显示：', e.message);
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   if (!$('#nickname').value) $('#nickname').value = makeDefaultNickname();
   bindEvents();
+  loadCardNames();
   connectSocket();
 });

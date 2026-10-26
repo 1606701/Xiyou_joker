@@ -11,11 +11,22 @@ const express = require('express');
 const { Server } = require('socket.io');
 
 const { initNet } = require('./net/net');
+const { CARD_NAMES } = require('./lib/cards');
 
 const PORT = Number(process.env.PORT) || 3000;
 
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
+
+/**
+ * 牌面展示名称的唯一来源（BUG-006）：
+ * 前端不再本地维护第二份 CARD_NAMES，改由本接口拉取，改牌名只需改 lib/cards.js 一处。
+ */
+app.get('/api/cards', (req, res) => {
+  res.set('Cache-Control', 'public, max-age=3600');
+  res.json({ names: CARD_NAMES, rankShow: { SJ: '小王', BJ: '大王' } });
+});
+
 
 const server = http.createServer(app);
 const io = new Server(server, {
