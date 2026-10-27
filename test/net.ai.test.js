@@ -406,3 +406,237 @@ test('对局中真人掉线且宽限期到：AI 在座也不能阻止房间回�
   await waitFor(() => !h.rooms.has(code), { timeout: 5000, label: '宽限到期后删房' });
   assert.strictEqual(h.rooms.has(code), false, '真人全离线时必须回收，原判据 players.every(!connected) 因 AI 恒在线而永不成立');
 });
+
+/* ============================================================
+ * 4. 跨局生命周期：AI 定时器不随局数增长（W1-QA-02）
+ *
+ * 为什么单独一条：
+ *   AI 定时器跨局泄漏**不会让任何单局变红** —— 泄漏的那一个要等到它自己到期才会引发
+ *   「同一 AI 被调度两次」，而且往往还要再过几局才表现为回合跳变/提前出牌。
+ *   所以这里不看「某一局过没过」，而是逐局采样 net 定时器的**峰值**：
+ *   1 个 GC 巡检 + 1 个当前动作定时器 = 恒为 2，一旦变成 3 就说明有定时器没被清掉。
+ * ============================================================ */
+
+/**
+ * 定时器账本：只登记「调用栈里出现 net/net.js」的定时器。
+ * 本文件自己的 `sleep()` 也走 setTimeout，若登记全部会把噪声算进去 —— 用栈帧过滤掉。
+ */
+function installTimerLedger() {
+  const realST = global.setTimeout;
+  const realCT = global.clearTimeout;
+  const realSI = global.setInterval;
+  const realCI = global.clearInterval;
+  const live = new Map();
+  let seq = 0;
+  const fromNet = () => /net[\\/]net\.js/.test(new Error().stack || '');
+
+  global.setTimeout = function (fn, ms, ...args) {
+    const net = fromNet();
+    const id = realST.call(global, (...x) => { live.delete(id); fn(...x); }, ms, ...args);
+    if (net) live.set(id, { kind: 'timeout', delay: ms, seq: ++seq });
+    return id;
+  };
+  global.clearTimeout = function (id) { live.delete(id); return realCT.call(global, id); };
+  global.setInterval = function (fn, ms, ...args) {
+    const net = fromNet();
+    const id = realSI.call(global, fn, ms, ...args);
+    if (net) live.set(id, { kind: 'interval', delay: ms, seq: ++seq });
+    return id;
+  };
+  global.clearInterval = function (id) { live.delete(id); return realCI.call(global, id); };
+
+  return {
+    count: () => live.size,
+    list: () => [...live.values()],
+    restore() {
+      // 先把还活着的 net 定时器全部掐掉，再还原全局。
+      // 理由：用例中途断言失败时，牌局还停在 playing，残留的回合定时器会继续推进、
+      // 自己再排下一个 —— 进程就迟迟不退出（神似「卡死」，但其实是测试卫生问题）。
+      for (const [id, meta] of [...live.entries()]) {
+        if (meta.kind === 'interval') realCI.call(global, id);
+        else realCT.call(global, id);
+        live.delete(id);
+      }
+      global.setTimeout = realST;
+      global.clearTimeout = realCT;
+      global.setInterval = realSI;
+      global.clearInterval = realCI;
+    },
+  };
+}
+
+test('★跨局连打 5 局：net 定时器峰值恒为 2 不随局数增长，AI 每局自动就绪、先手=上局通杀者', { timeout: 60000 }, async (t) => {
+  // 账本必须在 initNet 之前装好，否则连 GC 巡检定时器都统计不到
+  const ledger = installTimerLedger();
+  const h = makeHarness();
+  t.after(() => {
+    try {
+      h.dispose(); // 先清 net 内部定时器
+    } finally {
+      ledger.restore(); // 再还原全局，避免影响后续用例
+    }
+  });
+
+  const ROUNDS = 5;
+  const { host, room } = startWithAI(h, { ais: 2 });
+  assert.strictEqual(room.phase, 'playing', '前置：已开局');
+  assert.strictEqual(room.players.filter((p) => p.isAI).length, 2, '前置：房内有 2 个 AI');
+
+  const peaks = [];   // 每局采样到的定时器峰值
+  const costs = [];   // 每局耗时
+  let expectedFirst = room.ownerId; // 第 1 局没有上局通杀者 → 房主先手
+
+  for (let round = 1; round <= ROUNDS; round++) {
+    assert.strictEqual(room.phase, 'playing', `第 ${round} 局：应处于 playing（AI 未就绪会卡在 waiting）`);
+    assert.strictEqual(room.roundNumber, round, `第 ${round} 局：roundNumber 应递增`);
+    assert.strictEqual(
+      room.currentPlayerId,
+      expectedFirst,
+      `第 ${round} 局：先手必须是「上局通杀者」${expectedFirst}（先手是 AI 时同样要正确）`
+    );
+
+    // 边推进边按 1ms 粒度采样账本（AI 思考 3ms / 真人托管 15ms，1ms 足够密）
+    const t0 = Date.now();
+    let peak = 0;
+    while (room.phase === 'playing') {
+      peak = Math.max(peak, ledger.count());
+      if (Date.now() - t0 > 20000) {
+        throw new Error(
+          `第 ${round} 局 20s 内未到 settling（phase=${room.phase}, cur=${room.currentPlayerId}, ` +
+          `桌面 ${room.tablePile.length} 张, 定时器 ${JSON.stringify(ledger.list())}）`
+        );
+      }
+      await sleep(1);
+    }
+    costs.push(Date.now() - t0);
+    peaks.push(peak);
+
+    // ---- 每局的结算不变量 ----
+    assert.strictEqual(room.phase, 'settling', `第 ${round} 局必须走到 settling`);
+    const lr = room.lastResult;
+    assert.ok(lr, `第 ${round} 局：settling 必须有结算结果`);
+    assert.strictEqual(lr.results.length, room.players.length, `第 ${round} 局：结算必须覆盖全部 ${room.players.length} 人（含 AI）`);
+
+    const minPenalty = Math.min(...room.players.map((p) => p.penaltyPile.length));
+    const winner = room.players.find((p) => p.id === lr.winnerId);
+    assert.ok(winner, `第 ${round} 局：通杀者必须在房内`);
+    assert.strictEqual(
+      winner.penaltyPile.length,
+      minPenalty,
+      `第 ${round} 局：通杀者必须是败牌最少者（${winner.name} ${winner.penaltyPile.length} 张 vs 最少 ${minPenalty} 张）`
+    );
+    assert.strictEqual(host.all('gameEnd').length, round, `第 ${round} 局后：真人应恰好收到 ${round} 次 gameEnd`);
+    assert.deepStrictEqual(host.all('error'), [], `第 ${round} 局为止：全程不应给真人推任何 error`);
+
+    // ---- 跨局：nextRound → waiting ----
+    host.send('nextRound');
+    assert.strictEqual(room.phase, 'waiting', `第 ${round} 局 nextRound 应回到 waiting`);
+    const ais = room.players.filter((p) => p.isAI);
+    assert.ok(
+      ais.every((p) => p.ready),
+      `第 ${round} 局后：AI 必须仍为已准备（否则房主点开始会被 NOT_READY 卡住，而 AI 永远不会自己点准备）`
+    );
+    const human = room.players.find((p) => !p.isAI);
+    assert.strictEqual(human.ready, false, `第 ${round} 局后：真人应被清成未准备（需要自己再点一次）`);
+
+    expectedFirst = lr.winnerId; // 下一局先手 = 本局通杀者
+
+    if (round < ROUNDS) {
+      host.send('ready', { ready: true });
+      host.send('start');
+      assert.strictEqual(room.phase, 'playing', `第 ${round} 局后：应能立刻再开一局（AI 未就绪这里就会停在 waiting）`);
+    }
+  }
+
+  // 第 5 个循环的收尾：确认第 5 次 nextRound 之后同样能开起来（把「5 个完整循环」跑满）
+  host.send('ready', { ready: true });
+  host.send('start');
+  assert.strictEqual(room.phase, 'playing', '第 5 次 nextRound 后仍必须能开局');
+  assert.strictEqual(room.roundNumber, ROUNDS + 1, `应进入第 ${ROUNDS + 1} 局`);
+  assert.strictEqual(room.currentPlayerId, expectedFirst, `第 ${ROUNDS + 1} 局先手应为第 ${ROUNDS} 局通杀者`);
+
+  // ---- 本组用例的核心断言 ----
+  const maxPeak = Math.max(...peaks);
+  assert.strictEqual(
+    maxPeak,
+    2,
+    `net 定时器峰值必须恒为 2（1 个 GC 巡检 + 1 个当前动作定时器），不随局数增长。` +
+    `实测各局峰值：${JSON.stringify(peaks)}。` +
+    '峰值 >2 说明有定时器跨局叠加/未清理 —— 这种泄漏不会让任何单局变红，只会跑久之后才炸'
+  );
+
+  t.diagnostic(`5 局耗时 ${costs.join(' / ')}ms；各局定时器峰值 ${JSON.stringify(peaks)}`);
+});
+
+/**
+ * 上面那条「峰值恒为 2」的鉴别力从哪来：
+ *   上面 5 局的正常流程里，任何时刻都只有「1 个当前动作定时器」，没有重复调度的入口 ——
+ *   所以它抓的是**跨局泄漏**，抓不到「同一玩家被调度两次」。而后者有一个真实入口：
+ *   `phase === 'playing'` 时再点「开始游戏」会走幂等分支，重新 `sendTurn(当前玩家)`；
+ *   若当前玩家是 AI，就相当于又排了一次 scheduleAI。房主连点两下开始就会踩到（P2-05 同源）。
+ *   这条用例把那一下点出来，钉住「重复调度必须被去重成 1 个定时器」。
+ */
+test('★对局中重复点「开始」（幂等分支）不得叠加 AI 定时器：同一 AI 只保留 1 个', { timeout: 20000 }, async (t) => {
+  const ledger = installTimerLedger();
+  // AI 思考拉到 400ms、真人回合拉到 60s：整条用例不需要等牌局推进，只数定时器，杜绝抢跑
+  const h = makeHarness({ aiThinkMs: 400, turnTimeoutMs: 60 * 1000 });
+  t.after(() => {
+    try {
+      h.dispose();
+    } finally {
+      ledger.restore();
+    }
+  });
+
+  const { host, room, added } = startWithAI(h, { ais: 2 });
+  assert.strictEqual(room.phase, 'playing', '前置：已开局');
+  assert.strictEqual(room.currentPlayerId, host.playerId, '前置：第 1 局房主（真人）先手');
+
+  // 前置账本：1 个 GC 巡检 + 1 个真人回合定时器
+  assert.strictEqual(
+    ledger.count(),
+    2,
+    `前置：开局后应恰好 2 个 net 定时器（GC 巡检 + 真人回合），实测 ${JSON.stringify(ledger.list())}`
+  );
+
+  // 把回合直接交给 AI（等价于「真人托管刚走完一手」，但不用等，避免抢跑）
+  const ai = added[0];
+  room.currentPlayerId = ai.id;
+
+  // 第 1 次点「开始」：幂等分支 → sendTurn(AI) → scheduleAI
+  host.send('start');
+  const afterFirst = ledger.count();
+  assert.strictEqual(
+    afterFirst,
+    3,
+    `第 1 次 start 后应为 3 个（GC + 真人那个已成陈旧的回合定时器 + AI 回合），实测 ${JSON.stringify(ledger.list())}`
+  );
+
+  // 第 2、3 次点「开始」：每点一次都会再排一次 scheduleAI —— 但必须先清掉上一个同 pid 的 AI 定时器
+  host.send('start');
+  const afterSecond = ledger.count();
+  host.send('start');
+  const afterThird = ledger.count();
+
+  assert.strictEqual(
+    afterSecond,
+    afterFirst,
+    '第 2 次「开始」不得叠加 AI 定时器 —— 否则同一个 AI 会被调度多次（长跑后定时器数与唤醒次数无界增长，' +
+    `极端时同一 AI 在一个回合里连动两次）。实测 ${JSON.stringify(ledger.list())}`
+  );
+  assert.strictEqual(
+    afterThird,
+    afterFirst,
+    `连点 3 次后定时器数必须不增长（去重生效），实测 ${afterThird} 个：${JSON.stringify(ledger.list())}`
+  );
+
+  // 去重之后 AI 仍然只出一次手：让它想完，手牌只能少一次的量
+  const handBefore = ai.hand.length;
+  const pileBefore = room.tablePile.length;
+  await sleep(600);
+  const played = pileBefore === 0 ? handBefore - ai.hand.length : room.tablePile.length - pileBefore;
+  assert.ok(played > 0, 'AI 必须仍然照常行动（去重不能把 AI 也去掉）');
+  assert.ok(played <= 4, `一次回合最多打 4 张，实际少了/多了 ${played} 张（>4 说明同一回合被调度了多次）`);
+  t.diagnostic(`连点 3 次 start 后定时器数 ${afterFirst} → ${afterSecond} → ${afterThird}，AI 本次出了 ${played} 张`);
+});
+
