@@ -220,7 +220,9 @@ function renderRoom() {
     const li = document.createElement('li');
     const badges = [];
     if (p.isOwner) badges.push('<span class="badge owner">房主</span>');
-    badges.push(p.ready ? '<span class="badge ready">已准备</span>' : '<span class="badge wait">未准备</span>');
+    // AI 不会点「准备」，显示「未准备」会让人以为在等它操作 → 直接给 AI 徽标
+    if (p.isAI) badges.push('<span class="badge ai">AI</span>');
+    else badges.push(p.ready ? '<span class="badge ready">已准备</span>' : '<span class="badge wait">未准备</span>');
     if (!p.connected) badges.push('<span class="badge offline">掉线</span>');
     li.innerHTML = `
       <div class="left"><span class="seat-no">${p.seat + 1}</span><span class="name">${escapeHtml(p.name)}${p.id === meId ? '（我）' : ''}</span></div>
@@ -231,9 +233,15 @@ function renderRoom() {
   const me = st.players.find((p) => p.id === meId);
   const isOwner = me && me.isOwner;
   const allReady = st.players.length >= 3 && st.players.every((p) => p.ready);
+  const aiCount = st.players.filter((p) => p.isAI).length;
   $('#btnReady').textContent = me && me.ready ? '取消准备' : '准备';
   $('#btnStart').classList.toggle('hidden', !isOwner);
   $('#btnStart').disabled = !allReady;
+  // AI 按钮：非房主完全看不到；房主看到但按条件置灰（保持布局稳定，不来回跳）
+  $('#btnAddAI').classList.toggle('hidden', !isOwner);
+  $('#btnRemoveAI').classList.toggle('hidden', !isOwner);
+  $('#btnAddAI').disabled = st.players.length >= 6;
+  $('#btnRemoveAI').disabled = aiCount === 0;
   $('#roomStatus').textContent = st.players.length < 3
     ? `还需 ${3 - st.players.length} 人即可开局（当前 ${st.players.length}/6）`
     : (allReady ? '全部就绪，房主可开始游戏' : '等待所有人准备…');
@@ -304,7 +312,7 @@ function renderSeats(st) {
     seat.style.top = pos[p.seat].top + '%';
     seat.innerHTML = `
       <div class="avatar">${escapeHtml(initialOf(p.name))}${p.isOwner ? '<span class="crown">主</span>' : ''}</div>
-      <div class="sname">${escapeHtml(p.name)}${p.id === st.youId ? '（我）' : ''}</div>
+      <div class="sname">${escapeHtml(p.name)}${p.isAI ? '·AI' : ''}${p.id === st.youId ? '（我）' : ''}</div>
       <div class="smeta"><span>${p.handCount} 张</span>${p.penaltyCount ? `<span class="penalty">败 ${p.penaltyCount}</span>` : ''}</div>
       ${p.connected ? '' : '<div class="off-tag">离线</div>'}`;
     el.appendChild(seat);
@@ -526,6 +534,10 @@ function bindEvents() {
     S.socket.emit('leaveRoom');
     resetToHome();
   });
+
+  // AI 补位：加/踢都由服务端判断权限与阶段，前端不做前置拦截（避免两侧规则各写一遍）
+  $('#btnAddAI').addEventListener('click', () => S.socket.emit('addAI'));
+  $('#btnRemoveAI').addEventListener('click', () => S.socket.emit('removeAI'));
 
   $('#btnPlay').addEventListener('click', () => {
     if (!S.selectedIds.length) return;

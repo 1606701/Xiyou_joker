@@ -13,6 +13,7 @@
 
 const { randomUUID } = require('node:crypto');
 const engine = require('../lib/engine');
+const ai = require('../lib/ai');
 
 /** 默认定时参数（ms）。测试可注入更短的值；生产环境保持下列默认。 */
 const DEFAULT_TIMINGS = Object.freeze({
@@ -28,6 +29,8 @@ const DEFAULT_TIMINGS = Object.freeze({
   offlinePickupDelayMs: 1000,
   /** 结算后 nextRound 防误触冷却 */
   nextRoundCooldownMs: 3000,
+  /** AI 思考延迟：不为性能，纯粹让真人看清「谁出了什么」，否则三家走完只要几十毫秒 */
+  aiThinkMs: 800,
   /** 僵尸房间巡检间隔 */
   roomGcIntervalMs: 60 * 1000,
   /** waiting 阶段全员离线的回收阈值 */
@@ -52,6 +55,8 @@ function getView(room, pid) {
     handCount: p.hand.length,
     penaltyCount: p.penaltyPile.length,
     isOwner: p.id === room.ownerId,
+    // AI 补位：前端据此把准备徽标换成 AI 徽标（AI 不会点准备，显示「未准备」会让人白等）
+    isAI: !!p.isAI,
   }));
   const me = room.players.find((p) => p.id === pid);
   return {
@@ -82,7 +87,7 @@ function getView(room, pid) {
  */
 function initNet(io, rooms, timings = {}) {
   const T = { ...DEFAULT_TIMINGS, ...timings };
-  const timers = new Map(); // pid -> { turn, pickup }
+  const timers = new Map(); // pid -> { turn, pickup, ai }
   const settleAt = new Map(); // roomCode -> 进入 settling 的时间戳（nextRound 防误触基准）
   const idleSince = new Map(); // roomCode -> 全员离线起始时间戳（房间 GC 基准）
 
@@ -91,12 +96,35 @@ function initNet(io, rooms, timings = {}) {
     if (t) {
       clearTimeout(t.turn);
       clearTimeout(t.pickup);
+      clearTimeout(t.ai); // AI 调度也挂在同一张定时器账本上，漏清会留下「幽灵 AI 行动」
       timers.delete(pid);
     }
   }
 
   function clearRoomTimers(room) {
     for (const p of room.players) clearPlayerTimers(p.id);
+  }
+
+  /**
+   * 「房间还有没有真人」——AI 补位后，所有「房间是否该回收」的判断都必须基于真人。
+   *
+   * AI 的 connected 恒为 true（没有连接可掉），若沿用 `room.players.every(p => !p.connected)`
+   * 这类「数全体玩家」的写法，只要房里剩一个 AI，房间就永远不会被回收：
+   * 内存里堆一批「零真人在座、谁也开不了局」的僵尸房，且它们会一直占用随机房间码。
+   */
+  function humansOf(room) {
+    return room.players.filter((p) => !p.isAI);
+  }
+
+  /**
+   * 无真人 或 真人全部离线。
+   * `humansOf(...).length === 0` 正常路径下不该长期存在（最后一名真人在 waiting 阶段离开会即时删房、
+   * 在 playing 阶段离开会走宽限回收），但作为回收判据必须一并算作「无人」，
+   * 否则一旦出现只有 AI 的残留房间，它就成了唯一删不掉的那一种。
+   */
+  function noHumanOnline(room) {
+    const humans = humansOf(room);
+    return humans.length === 0 || humans.every((p) => !p.connected);
   }
 
   /**
@@ -156,6 +184,11 @@ function initNet(io, rooms, timings = {}) {
   function sendTurn(room, pid) {
     const player = getPlayer(room, pid);
     if (!player) return;
+
+    // AI 补位：AI 没有 socket，既不该走 computeLegalMoves 的异常降级分支，
+    // 也不该「碰巧」因为 socketOf() 返回 undefined 而静默跳过 only-for-human 的 yourTurn 广播。
+    // 走独立的 scheduleAI 路径，语义明确：AI 自己算、自己动手。
+    if (player.isAI) return scheduleAI(room, pid);
 
     // 最后一道保险：即使 computeLegalMoves 因未知缺陷抛错（如 BUG-007 的 topCard=null），
     // 也绝不能让「本回合没有任何定时器」——那就等于整桌永久卡死。
@@ -258,6 +291,87 @@ function initNet(io, rooms, timings = {}) {
     timers.set(pid, t);
   }
 
+  /**
+   * AI 玩家行动调度（AI 补位）。
+   *
+   * 与 scheduleTurn / schedulePickup 并列的第三条调度路径：
+   * - AI 不需要 yourTurn（没有 socket 可发），也不需要「超时兜底」——它永远不会超时；
+   * - 但**必须**占用同一张 timers 账本（key = pid），否则 clearPlayerTimers / clearRoomTimers
+   *   清不掉它，踢掉 AI 或回收房间后会留下一个「幽灵 AI 继续出牌」的定时器；
+   * - 延迟由 T.aiThinkMs 控制，纯粹是给人看的（默认 800ms），测试注入个位数毫秒。
+   */
+  function scheduleAI(room, pid) {
+    clearPlayerTimers(pid);
+    const t = {};
+    t.ai = setTimeout(() => {
+      timers.delete(pid);
+      // 四道陈旧定时器守卫，缺一不可：
+      // 1) 房间已被回收（rooms 里已经没有它）——AI 回调会自己重新挂定时器（sendTurn → scheduleAI），
+      //    少了这一道就会变成「房间删了、AI 还在自走棋」的孤儿定时器循环，进程永不退出；
+      // 2) 房间已结束；3) 轮次已不属于该 AI；4) 该 AI 已被移出房间（踢 AI 或房间重建）
+      if (rooms.get(room.roomCode) !== room) return;
+      if (room.phase !== 'playing' || room.currentPlayerId !== pid) return;
+      const p = getPlayer(room, pid);
+      if (!p || !p.isAI) return;
+
+      let res;
+      try {
+        const mv = ai.chooseMove(room, pid);
+        res = mv.type === 'pickup' ? engine.pickUp(room, pid) : engine.playCard(room, pid, mv.cardIds);
+      } catch (e) {
+        // 策略与规则不一致时不能整桌卡死：降级到「超时托管选择器」（最小可压 → A → 2 → 收牌）
+        console.error('[net] AI 决策失败，降级 autoPlay', {
+          roomCode: room.roomCode,
+          pid,
+          phase: room.phase,
+          topCard: room.topCard,
+          topCount: room.topCount,
+          tablePileLength: room.tablePile.length,
+          error: e && e.message,
+          code: e && e.code,
+        });
+        try {
+          res = engine.autoPlay(room, pid);
+        } catch (e2) {
+          // 最后一道：连托管选择器也失败。宁可把这一局异常结束（并让真人看到提示），
+          // 也绝不留下「0 个定时器 + 一直等 AI」的死桌 —— 那是本项目最贵的故障模式。
+          console.error('[net] AI 降级 autoPlay 仍失败，强制结算本局', {
+            roomCode: room.roomCode,
+            pid,
+            phase: room.phase,
+            currentPlayerId: room.currentPlayerId,
+            topCard: room.topCard,
+            tablePileLength: room.tablePile.length,
+            drawPileLength: room.drawPile.length,
+            error: e2 && e2.message,
+            code: e2 && e2.code,
+          });
+          try {
+            engine.settleGame(room);
+          } catch (e3) {
+            console.error('[net] 强制结算失败，房间已无可用恢复手段', {
+              roomCode: room.roomCode,
+              playerCount: room.players.length,
+              error: e3 && e3.message,
+            });
+          }
+          // 让真人至少看到一句人话，而不是盯着一张静止的牌桌
+          for (const other of humansOf(room)) {
+            const s = socketOf(other);
+            if (s) broadcastError(s, 'INTERNAL', '服务端异常，本局已强制结算');
+          }
+          sendGameEnd(room);
+          return;
+        }
+      }
+
+      broadcastState(room);
+      if (res.action === 'gameOver') sendGameEnd(room);
+      else if (room.phase === 'playing' && room.currentPlayerId) sendTurn(room, room.currentPlayerId);
+    }, T.aiThinkMs);
+    timers.set(pid, t);
+  }
+
   /** 记录进入 settling 的时刻（nextRound 防误触用；同一局只记第一次） */
   function markSettled(room) {
     if (!settleAt.has(room.roomCode)) settleAt.set(room.roomCode, Date.now());
@@ -301,7 +415,8 @@ function initNet(io, rooms, timings = {}) {
   function gcRooms() {
     const now = Date.now();
     for (const [code, room] of [...rooms.entries()]) {
-      const allOffline = room.players.length > 0 && room.players.every((p) => !p.connected);
+      // AI 补位：判据必须是「无真人或真人全离线」，不能数全体玩家（详见 noHumanOnline 注释）
+      const allOffline = noHumanOnline(room);
       if (!allOffline) {
         idleSince.delete(code);
         continue;
@@ -418,7 +533,9 @@ function initNet(io, rooms, timings = {}) {
         socket.leave(room.roomCode);
         socket.playerId = null; // 已离座，身份随之作废（重复点击离开变成静默 no-op）
         broadcastState(room);
-        if (room.players.length === 0) {
+        // 空房判定同样只数真人：房里只剩 AI 时没人能开下一局，属于僵尸房，必须回收
+        if (humansOf(room).length === 0) {
+          clearRoomTimers(room);
           rooms.delete(room.roomCode);
           settleAt.delete(room.roomCode);
           idleSince.delete(room.roomCode);
@@ -492,6 +609,47 @@ function initNet(io, rooms, timings = {}) {
     });
 
     /**
+     * 加一个 AI 补位（仅房主、仅 waiting）。
+     * AI 玩家是「没有 socket 的玩家」：socketId = null、connected = true、
+     * broadcastState / sendGameEnd 里 socketOf() 返回 undefined 已被 `if (socket)` 守卫跳过，
+     * 所以不需要假 socket 也不会崩。它的行动统一由 scheduleAI 驱动。
+     */
+    socket.on('addAI', () => {
+      const room = roomOfPlayer(socket);
+      if (!room) return fail('ROOM_NOT_FOUND', '未在房间中');
+      if (room.ownerId !== socket.playerId) return fail('NOT_OWNER', '只有房主可以加 AI');
+      if (room.phase !== 'waiting') return fail('GAME_RUNNING', '对局进行中，无法加 AI');
+      if (room.players.length >= 6) return fail('ROOM_FULL', '房间已满（最多 6 人）');
+
+      const seat = room.players.length;
+      const used = new Set(room.players.map((p) => p.name));
+      const name = ai.AI_NAMES.find((n) => !used.has(n)) || `AI-${seat + 1}`;
+      const id = `ai-${randomUUID()}`;
+      const player = { id, name, socketId: null, rejoinToken: null, isAI: true, connected: true };
+      try {
+        engine.addPlayer(room, player);
+        // AI 永远就绪，否则房主永远等不到「全员准备」（AI 没有手可以点）
+        engine.setReady(room, id, true);
+      } catch (e) {
+        return fail(e.code || 'ERROR', e.message);
+      }
+      broadcastState(room);
+    });
+
+    /** 踢掉最后一个 AI（仅房主、仅 waiting；没有 AI 时静默 no-op） */
+    socket.on('removeAI', () => {
+      const room = roomOfPlayer(socket);
+      if (!room) return fail('ROOM_NOT_FOUND', '未在房间中');
+      if (room.ownerId !== socket.playerId) return fail('NOT_OWNER', '只有房主可以踢 AI');
+      if (room.phase !== 'waiting') return fail('GAME_RUNNING', '对局进行中，无法踢 AI');
+      const ais = room.players.filter((p) => p.isAI);
+      if (ais.length === 0) return; // 幂等：重复点击不弹错
+      const last = ais.reduce((a, b) => (b.seat > a.seat ? b : a));
+      engine.removePlayer(room, last.id);
+      broadcastState(room);
+    });
+
+    /**
      * 再来一局（BUG-003）：
      * - 仅房主可触发，非房主回 NOT_OWNER；
      * - 结算后 nextRoundCooldownMs（默认 3s）内静默忽略，避免结算页刚弹出就被误触点掉；
@@ -544,12 +702,15 @@ function initNet(io, rooms, timings = {}) {
         if (room.phase === 'waiting') {
           engine.removePlayer(room, player.id);
           broadcastState(room);
-          if (room.players.length === 0) {
+          // waiting 阶段宽限到期被移除后，只剩 AI 的房间同样是死房（没人能点开始）
+          if (humansOf(room).length === 0) {
+            clearRoomTimers(room);
             rooms.delete(room.roomCode);
             settleAt.delete(room.roomCode);
             idleSince.delete(room.roomCode);
           }
-        } else if (room.players.every((p) => !p.connected)) {
+        } else if (noHumanOnline(room)) {
+          // AI 恒 connected=true，沿用 players.every(!connected) 会因为 AI 永远「在线」而永不回收
           clearRoomTimers(room);
           rooms.delete(room.roomCode);
           settleAt.delete(room.roomCode);

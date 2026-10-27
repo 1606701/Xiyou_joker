@@ -45,6 +45,11 @@
         <div class="actions">
           <button id="btnReady" class="btn primary">准备</button>
           <button id="btnStart" class="btn hidden">开始游戏</button>
+          <!-- AI 补位：非房主看不到；一个真人 + 2 个 AI 就能开局 -->
+          <div class="actions-row">
+            <button id="btnAddAI" class="btn hidden">加 AI</button>
+            <button id="btnRemoveAI" class="btn hidden">踢 AI</button>
+          </div>
           <button id="btnLeave" class="btn ghost">离开房间</button>
         </div>
         <p id="roomStatus" class="status"></p>
