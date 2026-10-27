@@ -2,7 +2,8 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0B1D18" />
   <title>西游斗牌</title>
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -14,7 +15,7 @@
       <div id="roomInfo" class="hidden"></div>
     </header>
 
-    <!-- ========== 房间视图 ========== -->
+    <!-- ========== 首页 ========== -->
     <section id="view-home" class="view">
       <div class="panel">
         <h2>加入牌局</h2>
@@ -23,13 +24,13 @@
           <input id="nickname" type="text" maxlength="12" placeholder="如：孙悟空" autocomplete="off" />
         </label>
         <button id="btnCreate" class="btn primary">创建房间</button>
-        <div class="divider">或</div>
+        <div class="divider"><span>或输入房间码</span></div>
         <div class="join-row">
-          <input id="roomCode" type="text" maxlength="3" inputmode="numeric" pattern="[0-9]*" placeholder="如 666" class="code-input" />
-          <button id="btnJoin" class="btn">加入房间</button>
+          <input id="roomCode" type="text" maxlength="3" inputmode="numeric" pattern="[0-9]*" placeholder="666" class="code-input" />
+          <button id="btnJoin" class="btn">加入</button>
         </div>
       </div>
-      <p class="hint">3~6 人，使用一副扑克牌。<br/>先出完? 不——收牌最少者通杀!</p>
+      <p class="hint">3~6 人 · 一副扑克牌 · <b>败牌最少者通杀</b></p>
     </section>
 
     <!-- ========== 房间面板 ========== -->
@@ -39,7 +40,7 @@
           <span class="label">房间码</span>
           <span id="roomCodeBig" class="code-big"></span>
         </div>
-        <p class="hint">让朋友在同一 WiFi 下访问 <b id="lanUrl">本机地址</b> 输入房间码加入</p>
+        <p class="hint">同一 WiFi 下访问 <b id="lanUrl">本机地址</b>，输入房间码加入</p>
         <ul id="playerList" class="player-list"></ul>
         <div class="actions">
           <button id="btnReady" class="btn primary">准备</button>
@@ -58,7 +59,6 @@
         <span id="iDir"></span>
       </div>
 
-      <!-- 牌桌区：座位环 + 桌面（座位在边缘，桌面居中，互不遮挡） -->
       <div id="gameArea">
         <div id="seats"></div>
         <div id="table">
@@ -68,15 +68,14 @@
         </div>
       </div>
 
-      <!-- 操作提示条 -->
       <div id="promptBar" class="prompt-bar"></div>
 
-      <!-- 手牌区 -->
       <div id="handArea">
+        <div id="handMeta" class="hand-meta"></div>
         <div id="hand" class="hand"></div>
         <div class="hand-actions">
           <button id="btnPlay" class="btn primary hidden">打出</button>
-          <button id="btnPickup" class="btn danger hidden">收牌（无牌可出）</button>
+          <button id="btnPickup" class="btn danger hidden">收牌</button>
         </div>
       </div>
     </section>
@@ -84,14 +83,15 @@
     <!-- ========== 结算覆盖层 ========== -->
     <div id="view-settle" class="overlay hidden">
       <div class="panel settle-panel">
-        <h2>本局结束</h2>
-        <div id="winnerBanner" class="winner-banner"></div>
+        <div class="winner-banner" id="winnerBanner"></div>
         <ul id="resultList" class="result-list"></ul>
         <p class="hint">下一局由通杀者先出牌</p>
         <button id="btnNextRound" class="btn primary">再来一局</button>
       </div>
     </div>
 
+    <!-- 动效层（出牌飞入 / 收牌飞走） -->
+    <div id="fxLayer" class="fx-layer"></div>
     <!-- Toast -->
     <div id="toast" class="toast hidden"></div>
     <!-- 重连横幅 -->
