@@ -1,0 +1,24 @@
+[Unit]
+Description=Xiyou Joker (LAN card game, 西游斗牌)
+After=network-online.target
+Wants=network-online.target
+# 这块板子上 node 启动有约 7% 概率直接崩（V8 deserialization OOM，非内存不足），
+# Restart=always 是必需的，否则一次运气不好就永久离线。
+# 也因为这个，不要设 StartLimitBurst 很小的值：连续几次启动失败会把 unit 锁成 failed。
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=HwHiAiUser
+WorkingDirectory=/home/HwHiAiUser/Yangfan_WorkSpace/xiyou_joker
+Environment=PORT=3000
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=3
+# journald 在这块板子上收不到应用日志，只能直接落文件
+StandardOutput=append:/var/log/xiyou-joker.log
+StandardError=append:/var/log/xiyou-joker.log
+
+[Install]
+WantedBy=multi-user.target
