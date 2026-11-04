@@ -44,6 +44,10 @@ const S = {
   cardNames: {},                        // 由 GET /api/cards 覆盖（BUG-006）
   rankShow: FALLBACK_RANK_SHOW,
   handSig: '',                          // 手牌指纹：只有牌真的变了才播放入场动画
+  snap: null,                           // 上一帧快照：动效与音效靠「状态差异」驱动，不靠事件
+  turnTimerRaf: null,                   // 回合倒计时的 rAF 句柄（无 rAF 环境为 null）
+  lastTickSec: 0,                        // 报时去重：3/2/1 各响一次
+  prevPlayerIds: '',                     // 上一帧的玩家 id 串：用来听出「有人加入 / 加了 AI」
 };
 
 /* ---------- 工具 ---------- */
@@ -52,10 +56,20 @@ function escapeHtml(s) {
 }
 
 let toastTimer = null;
-function toast(msg) {
+/**
+ * @param {string} msg
+ * @param {boolean} [isErr] 报错时抖一下；成功提示保持静默淡出，两者要能一眼分开
+ */
+function toast(msg, isErr) {
   const el = $('#toast');
   el.textContent = msg;
   el.classList.remove('hidden');
+  el.classList.remove('err');
+  if (isErr) {
+    // 重排一次，让同一个抖动能连续重播（连点两次非法牌也要有反馈）
+    if (el.offsetWidth) void el.offsetWidth;
+    el.classList.add('err');
+  }
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.add('hidden'), 2600);
 }
@@ -114,6 +128,8 @@ function connectSocket() {
     S.state = state;
     S.myTurn = null;
     S.selectedIds = [];
+    S.snap = null;                        // 换房后重算差异，避免拿上一个房间的牌堆去 diff
+    S.prevPlayerIds = state.players.map((p) => p.id).join(',');
     showView(state.phase === 'waiting' ? 'view-room' : 'view-game');
     // #roomInfo（房间码）在房间面板与牌桌都要显示，所以两种阶段都渲染一次房间信息
     renderRoom();
@@ -144,7 +160,26 @@ function connectSocket() {
    *   结算遮罩只由 gameEnd / roomJoined 负责弹出。
    */
   S.socket.on('state', (state) => {
+    const prevPhase = S.state ? S.state.phase : null;
     S.state = state;
+
+    // 有人加入 / 加了 AI：只按「新增的那一个人」判音色，且不进游戏音效的依赖链
+    const ids = state.players.map((p) => p.id).join(',');
+    if (S.prevPlayerIds && S.prevPlayerIds !== ids) {
+      const before = new Set(S.prevPlayerIds.split(','));
+      const added = state.players.filter((p) => p.id && !before.has(p.id));
+      if (added.length === 1) sfx(added[0].isAI ? 'ai' : 'join');
+    }
+    S.prevPlayerIds = ids;
+
+    // 发牌：只在「等待 → 对局」这个跃迁上响一次。
+    // 刻意不用「自己手牌从 0 变 5」判定 —— 刷新/重连时 hand 也会从空变成 5，
+    // 那样每刷新一次就会重放一遍发牌音（调色板 §7 明令禁止重放）。
+    if (prevPhase === 'waiting' && state.phase === 'playing') {
+      const me = state.players.find((p) => p.id === state.youId);
+      sfx('deal', { n: me ? me.handCount : 5 });
+    }
+
     // 回到等待阶段（开局前 / 再来一局）时清空本回合的合法牌与选中
     if (S.myTurn && state.phase === 'waiting') {
       S.myTurn = null;
@@ -172,6 +207,8 @@ function connectSocket() {
     // 不切视图：服务端保证 sendTurn 之前必有一次 broadcastState（state 处理器已切到 view-game），
     // 这里只做兜底告警 —— 如果将来这个不变量被破坏，控制台会告诉我们，而不是让用户看不见桌面。
     renderGame();
+    startTurnTimer(deadline);
+    sfx('yourTurn');
     warnIfViewMismatch('yourTurn');
   });
 
@@ -180,11 +217,16 @@ function connectSocket() {
     S.selectedIds = [];
     // 同样不切视图：settling 的 state 广播先把视图留在 view-game，结算遮罩叠在其上。
     showSettle(data);
+    // 结算音只在这条事件上响；结算期 roomJoined（刷新重连）那条路径刻意不补音，
+    // 否则每次刷新都会被一段结算音乐砸一次。
+    const winnerId = data && data.winnerIds && data.winnerIds[0];
+    sfx(winnerId && S.state && winnerId === S.state.youId ? 'settle.win' : 'settle.lose');
     warnIfViewMismatch('gameEnd');
   });
 
   S.socket.on('error', ({ code }) => {
-    toast(ERROR_TEXT[code] || ERROR_TEXT.DEFAULT);
+    toast(ERROR_TEXT[code] || ERROR_TEXT.DEFAULT, true);
+    sfx('illegal');
     // 重连令牌失效（如房间已回收）：清掉本地凭证，回到首页重新加入
     if (code === 'BAD_TOKEN' || code === 'PLAYER_NOT_FOUND' || code === 'ROOM_NOT_FOUND') {
       if (!S.state) resetToHome();
@@ -251,12 +293,70 @@ function renderRoom() {
 function renderGame() {
   const st = S.state;
   if (!st || !st.players || st.players.length === 0) return;
+  const prev = S.snap;
   renderInfo(st);
   renderSeats(st);
   renderTable(st);
   renderHand(st);
   renderPrompt(st);
   renderHandMeta(st);
+  S.snap = snapshot(st);
+  applyFeel(prev, st);
+}
+
+/**
+ * 动效用「状态差异」驱动，而不是「事件」驱动。
+ * 理由：同一份状态会因托管推进、断线重连、重复广播等原因到达多次；
+ * 在事件回调里播动画，会因重复广播而抖（发牌动画当初就是这么踩过的）。
+ */
+function snapshot(st) {
+  const pen = {};
+  for (const p of st.players) pen[p.id] = p.penaltyCount || 0;
+  return {
+    topKey: st.topCard ? `${st.topCard.rank}|${st.topCard.suit}|${st.topCard.kind}` : '',
+    hasTop: !!st.topCard,
+    pile: st.tablePileCount || 0,
+    pen,
+  };
+}
+
+function applyFeel(prev, st) {
+  if (!prev) return;
+
+  const topKey = st.topCard ? `${st.topCard.rank}|${st.topCard.suit}|${st.topCard.kind}` : '';
+
+  // 1) 门槛牌真的换了才砸一下（不是每次广播都砸）
+  if (topKey && topKey !== prev.topKey) {
+    const el = $('#topCard');
+    if (el && el.classList) {
+      el.classList.remove('drop');
+      if (el.offsetWidth) void el.offsetWidth; // 重排，让同一动画可重播
+      el.classList.add('drop');
+    }
+  }
+
+  // 2) 桌面牌数变化 → 出牌 / 收牌。
+  //    必须用 diff：重连、重绘、托管推进都会重发同一份 state，
+  //    在事件回调里无条件播音会变成一串噪音。
+  const pile = st.tablePileCount || 0;
+  const delta = pile - (prev.pile || 0);
+  if (delta > 0) {
+    // 门槛牌没变却有新牌 → 是功能牌（A/2），不是压制
+    if (prev.hasTop && topKey !== prev.topKey) sfx('beat');
+    else if (delta >= 2) sfx('play.combo', { count: delta });
+    else sfx('play.single');
+  } else if (delta < 0) {
+    sfx('take'); // 桌面被收走进败牌堆
+  }
+
+  // 3) 败牌增加：对应座位的数字跳一下
+  for (const p of st.players) {
+    const before = prev.pen[p.id] || 0;
+    if ((p.penaltyCount || 0) > before) {
+      const node = document.querySelector(`#seats .seat[data-pid="${p.id}"] .penalty`);
+      if (node && node.classList) node.classList.add('bump');
+    }
+  }
 }
 
 /** 手牌上方的单行摘要：把「几张牌 / 败了几张」从座位的小字里解放出来 */
@@ -308,13 +408,21 @@ function renderSeats(st) {
     seat.classList.toggle('active', st.currentPlayerId === p.id);
     seat.classList.toggle('me', p.id === st.youId);
     seat.classList.toggle('offline', !p.connected);
+    // AI 正在思考：头像旁一颗呼吸的金点，否则真人会以为卡住了
+    seat.classList.toggle('ai-turn', !!p.isAI && st.currentPlayerId === p.id);
+    if (typeof seat.setAttribute === 'function') seat.setAttribute('data-pid', p.id);
     seat.style.left = pos[p.seat].left + '%';
     seat.style.top = pos[p.seat].top + '%';
     seat.innerHTML = `
       <div class="avatar">${escapeHtml(initialOf(p.name))}${p.isOwner ? '<span class="crown">主</span>' : ''}</div>
-      <div class="sname">${escapeHtml(p.name)}${p.isAI ? '·AI' : ''}${p.id === st.youId ? '（我）' : ''}</div>
+      <div class="sname">${escapeHtml(p.name)}${p.isAI ? '·AI' : ''}</div>
       <div class="smeta"><span>${p.handCount} 张</span>${p.penaltyCount ? `<span class="penalty">败 ${p.penaltyCount}</span>` : ''}</div>
       ${p.connected ? '' : '<div class="off-tag">离线</div>'}`;
+    // 「我」不再写进可见文本：座位只有 84~96px 宽，加「（我）」三个字会把名字挤成省略号。
+    // 视觉上由 .me 的金色字 + 高亮座位表达；读屏信息用 aria-label 保留。
+    if (typeof seat.setAttribute === 'function') {
+      seat.setAttribute('aria-label', `${p.name}${p.isAI ? '（AI）' : ''}${p.id === st.youId ? '（我）' : ''}，${p.handCount} 张`);
+    }
     el.appendChild(seat);
   });
 }
@@ -339,6 +447,9 @@ function renderTable(st) {
   } else {
     topEl.innerHTML = '<div class="card back"></div>';
   }
+  // 桌面有牌时补一层堆叠厚度（纯 CSS 阴影，不加 DOM）
+  const tableEl = $('#table');
+  if (tableEl) tableEl.classList.toggle('has-pile', (st.tablePileCount || 0) > 0);
   $('#tableInfo').textContent = top
     ? `桌面 ${st.tablePileCount} 张 · 门槛 ${st.topCount || 1} 张`
     : `桌面 ${st.tablePileCount} 张 · 新一轮任意出牌`;
@@ -394,21 +505,67 @@ function renderHand(st) {
   $('#btnPlay').classList.toggle('hidden', !(isMyTurn && S.selectedIds.length > 0));
 }
 
+/**
+ * 回合倒计时：一条会缩短的金线。
+ * 只在真实布局环境里跑（假 DOM 没有 requestAnimationFrame，直接跳过）；
+ * 不依赖 socket 事件，靠 deadline 绝对时间算比例，所以断线重连后也准。
+ */
+function stopTurnTimer() {
+  if (S.turnTimerRaf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(S.turnTimerRaf);
+  S.turnTimerRaf = null;
+  const bar = $('#turnTimer');
+  if (bar && bar.classList) bar.classList.add('hidden');
+}
+
+function startTurnTimer(deadline) {
+  stopTurnTimer();
+  const bar = $('#turnTimer');
+  if (!bar || !deadline) return;
+  if (typeof requestAnimationFrame !== 'function') return;
+  const fill = bar.firstElementChild;
+  if (!fill || !fill.style) return;
+  const total = Math.max(500, deadline - Date.now());
+  bar.classList.remove('hidden');
+  S.lastTickSec = 0;
+  const tick = () => {
+    const left = deadline - Date.now();
+    const k = Math.max(0, Math.min(1, left / total));
+    fill.style.transform = `scaleX(${k})`;
+    bar.classList.toggle('urgent', left <= 3000);
+    // 最后 3 秒每秒一声；sec 去重，保证 3/2/1 各响一次而不是每帧都响
+    const sec = Math.ceil(left / 1000);
+    if (sec <= 3 && sec >= 1 && sec !== S.lastTickSec) {
+      S.lastTickSec = sec;
+      sfx('tick', { last: sec === 1 });
+    }
+    if (left <= 0) { stopTurnTimer(); return; }
+    S.turnTimerRaf = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
 function renderPrompt(st) {
-  const bar = $('#promptBar');
-  if (st.phase === 'settling') { bar.textContent = '本局已结束'; return; }
+  // 文案写到 #promptText 子节点，**不能直接写 #promptBar.textContent** ——
+  // 那会把同级的 #turnTimer 元素一起清掉，倒计时条会在每次重绘后消失。
+  const text = $('#promptText');
+  const myTurnNow = st.phase === 'playing' && st.currentPlayerId === st.youId;
+  // 轮到自己时屏幕边缘金光呼吸（CSS 负责画，这里只切换开关）
+  const game = $('#view-game');
+  if (game && game.classList) game.classList.toggle('my-turn', myTurnNow);
+  if (!myTurnNow) stopTurnTimer();
+  if (st.phase === 'settling') { text.textContent = '本局已结束'; return; }
   const isMyTurn = st.currentPlayerId === st.youId;
   if (!isMyTurn) {
     const cur = st.players.find((p) => p.id === st.currentPlayerId);
-    bar.textContent = cur ? `等待 ${cur.name} 出牌…` : '…';
+    text.textContent = cur ? `等待 ${cur.name} 出牌…` : '…';
     return;
   }
-  if (!S.myTurn) { bar.textContent = '轮到你…'; return; }
+  if (!S.myTurn) { text.textContent = '轮到你…'; return; }
   const legal = S.myTurn.legalMoves;
   if (legal.beats.length === 0 && legal.actions.length === 0) {
-    bar.textContent = '无可出之牌，将自动收牌…';
+    text.textContent = '无可出之牌，将自动收牌…';
   } else {
-    bar.textContent = '轮到你：请压制（可同点多张）或打出功能牌';
+    text.textContent = '轮到你：请压制（可同点多张）或打出功能牌';
   }
 }
 
@@ -427,6 +584,8 @@ function showSettle(data) {
   results.forEach((r, i) => {
     const li = document.createElement('li');
     li.classList.toggle('winner', r.id === winnerId);
+    // 逐条错峰落位（55ms 一档）。减弱动效下 animation-delay 被全局清零，不会先空白再出现
+    if (li.style) li.style.animationDelay = `${i * 55}ms`;
     li.innerHTML = `
       <span>${i + 1}. ${escapeHtml(r.name)}${r.id === winnerId ? ' <span class="win-tag">通杀</span>' : ''}${r.id === youId ? '（我）' : ''}</span>
       <span class="pen">败牌 ${r.penaltyCount} 张</span>`;
@@ -458,6 +617,17 @@ function effectiveNickname() {
 function fxReady() {
   return typeof document !== 'undefined' && !!document.body
     && typeof document.body.appendChild === 'function';
+}
+
+/**
+ * 音效出口：只有这一个函数碰 Sfx，且整体 try/catch。
+ * 音效失败（没有 AudioContext、浏览器策略拦截、隐私模式）绝不能影响游戏逻辑，
+ * 所以调用方永远不需要判断可用性。
+ */
+function sfx(name, opts) {
+  try {
+    if (typeof window !== 'undefined' && window.Sfx) window.Sfx.play(name, opts);
+  } catch (e) { /* 静默 */ }
 }
 
 function rectOf(el) {
@@ -564,6 +734,35 @@ function bindEvents() {
   });
 
   $('#btnNextRound').addEventListener('click', () => S.socket.emit('nextRound'));
+
+  // 音效开关：状态存在 localStorage 里（只存用户显式选择），刷新后保持
+  const muteBtn = $('#btnMute');
+  if (muteBtn && muteBtn.addEventListener) {
+    if (typeof window !== 'undefined' && window.Sfx && window.Sfx.isMuted()) {
+      muteBtn.classList.add('off');
+      if (muteBtn.setAttribute) muteBtn.setAttribute('aria-pressed', 'true');
+    }
+    muteBtn.addEventListener('click', () => {
+      const nowMuted = (typeof window !== 'undefined' && window.Sfx)
+        ? window.Sfx.toggle()
+        : true;
+      muteBtn.classList.toggle('off', !!nowMuted);
+      if (muteBtn.setAttribute) muteBtn.setAttribute('aria-pressed', nowMuted ? 'true' : 'false');
+      if (nowMuted) toast('音效已关闭');
+    });
+  }
+
+  // 全局按钮点击音：全项目唯一绑在 DOM 层的声音（见调色板 §3）。
+  // 用捕获阶段，保证即使某个按钮的 handler 提前 return，点击仍然有反馈。
+  if (typeof document !== 'undefined' && document.addEventListener) {
+    document.addEventListener('click', (e) => {
+      const t = e && e.target;
+      if (!t || typeof t.closest !== 'function') return;
+      const btn = t.closest('button');
+      if (!btn || btn.id === 'btnMute') return; // 静音键自己有自己的音
+      sfx('ui.click');
+    }, true);
+  }
 }
 
 /* ---------- 启动 ---------- */

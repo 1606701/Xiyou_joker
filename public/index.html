@@ -12,7 +12,10 @@
     <!-- 顶部标题 -->
     <header id="topbar">
       <h1>西游斗牌</h1>
-      <div id="roomInfo" class="hidden"></div>
+      <div class="top-right">
+        <div id="roomInfo" class="hidden"></div>
+        <button id="btnMute" class="mute-btn" type="button" aria-label="音效开关" title="音效开关">音</button>
+      </div>
     </header>
 
     <!-- ========== 首页 ========== -->
@@ -73,7 +76,11 @@
         </div>
       </div>
 
-      <div id="promptBar" class="prompt-bar"></div>
+      <div id="promptBar" class="prompt-bar">
+        <span id="promptText"></span>
+        <!-- 回合倒计时：由 app.js 改它的 scaleX，不写 textContent（见 renderPrompt 注释） -->
+        <div id="turnTimer" class="turn-timer hidden"><i></i></div>
+      </div>
 
       <div id="handArea">
         <div id="handMeta" class="hand-meta"></div>
@@ -104,6 +111,8 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
+  <!-- 音效引擎必须在 app.js 之前：app.js 在绑定事件时就会读 window.Sfx -->
+  <script src="audio.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
