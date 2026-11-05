@@ -471,20 +471,30 @@ test('对抗 3：2 反转方向正确，连续两个 2 回到原方向（并校�
   assert.strictEqual((log.match(/反转/g) || []).length, 2, '事件日志应有两条反转记录');
 });
 
-/** 强制进入 settling：摸牌堆空 + 当前玩家无合法牌 → 收牌即终局 */
+/**
+ * 强制进入 settling。
+ * W3-ENG-RULE01：旧路径「摸牌堆空 + 当前玩家无合法牌 → 收牌即终局」已被产品规则移除
+ * （摸牌堆空只是补不了牌，对局继续）。终局条件改为「只剩一人手里有牌」—— 因此这里
+ * 把其他人的手牌清空，让当前玩家出一张牌触发终局，他手里剩的那张同时计入败牌。
+ */
 function forceSettle(ctx) {
   const room = ctx.room;
   const cur = curPlayer(room);
-  const top = MONSTER('K');
-  room.topCard = top;
-  room.topCount = 1;
-  room.tablePile = [top];
-  room.drawPile = [];
-  cur.hand = [MONSTER('4')];
   const sock = curSocket(ctx);
+  room.topCard = null; // 开轮：任一手牌都能出，残局一步走完
+  room.topCount = 1;
+  room.tablePile = [];
+  room.drawPile = [];
+  for (const p of room.players) {
+    p.hand = [];
+    p.penaltyPile = [];
+  }
+  cur.hand = [MONSTER('4'), MONSTER('6')];
   clearAll(ctx);
-  sock.fire('pickUp');
+  sock.fire('playCard', { cardIds: [cur.hand[0].id] });
   assert.strictEqual(room.phase, 'settling', '前置条件：应进入结算');
+  assert.strictEqual(cur.hand.length, 0, '前置条件：剩余手牌应已全部计入败牌');
+  assert.strictEqual(cur.penaltyPile.length, 1, '前置条件：剩的 1 张进了败牌堆');
   return { bombedAt: Date.now() };
 }
 

@@ -156,15 +156,28 @@ test('收牌：桌面入败牌堆、全员补至5张、收牌者新一轮先出'
   assert.ok(room.tablePile.length === 1);
 });
 
-test('收牌时摸牌堆为空 → 终局结算', () => {
+test('行为变更（W3-ENG-RULE01）：摸牌堆空 + 收牌 → 必须 pickedUp（不再因此终局），且补不了牌', () => {
   const { room, list } = makeGame({ topCard: MONSTER('7'), tablePile: [MONSTER('4'), MONSTER('7')], current: 1 });
-  const p1 = list[1];
-  p1.hand = [];
+  const [p0, p1, p2] = list;
+  p1.hand = [MONSTER('4'), MONSTER('6')]; // 压不住 7、无 A/2 → 只能收牌，但手里还有牌
+  p0.hand = [MONSTER('4')];
+  p2.hand = [MONSTER('6')];
   room.drawPile = [];
+  const handBefore = p1.hand.length;
+
   const ret = pickUp(room, p1.id);
-  assert.strictEqual(ret.action, 'gameOver');
-  assert.strictEqual(room.phase, 'settling');
-  assert.ok(room.lastResult);
+
+  assert.strictEqual(ret.action, 'pickedUp', '摸牌堆空只是「补不了牌」，不是终局（正面钉住这条行为变更）');
+  assert.strictEqual(room.phase, 'playing', '对局必须继续，直到只剩一人有牌');
+  assert.strictEqual(room.currentPlayerId, p1.id, '收牌者重开新一轮先出');
+  assert.strictEqual(p1.hand.length, handBefore, '摸牌堆空 → 一张也补不到，手牌不变');
+  assert.strictEqual(p1.penaltyPile.length, 2, '桌面 2 张仍计入收牌者败牌');
+
+  // 对局真的还能继续：收牌者出一张，回合正常交出去
+  const played = p1.hand[0];
+  const r2 = playCard(room, p1.id, [played.id]);
+  assert.strictEqual(r2.action, 'played', '摸牌堆空之后仍能正常出牌');
+  assert.strictEqual(room.currentPlayerId, p2.id);
 });
 
 // ---- 终局结算 ----
@@ -248,10 +261,14 @@ test('autoPlay：无牌可压时优先出 A，其次 2，最后收牌', () => {
   assert.strictEqual(room.topCard.rank, '7', 'A 不改变门槛');
   // 再轮到 P1（A 之后回到 P1？不——P0,P1,P2 顺时针，A 后轮到 P2）
   assert.strictEqual(room.currentPlayerId, list[2].id);
-  // 构造纯收牌场景：P1 手牌压不住 7 且无功能牌，drawPile 留牌避免收牌即终局
+  // 构造纯收牌场景：P1 手牌压不住 7 且无功能牌。
+  // 注意（W3-ENG-RULE01）：还必须让 P0/P2 手里留牌，否则「只剩一人有牌」会立刻终局，
+  // 测不到「无合法牌 → 收牌」这条分支本身。
   const { room: r2, list: l2 } = makeGame({ topCard: MONSTER('7'), tablePile: [MONSTER('4'), MONSTER('7')], current: 1 });
   l2.forEach((p) => { p.hand = []; });
+  l2[0].hand = [MONSTER('K')];
   l2[1].hand = [MONSTER('4')]; // 压不住 7，且无功能牌
+  l2[2].hand = [MONSTER('K')];
   r2.drawPile = [MONSTER('K')];
   const ret2 = autoPlay(r2, l2[1].id);
   assert.strictEqual(ret2.action, 'pickedUp', '无合法牌 → 收牌');
@@ -436,3 +453,144 @@ test('BUG-007：开轮打出的 A 留在桌面，下一次收牌时进入败牌�
   assert.strictEqual(room.topCard, null);
   assert.strictEqual(room.currentPlayerId, p1.id, '收牌者成为新一轮先出者');
 });
+
+/* ============================================================
+ * W3-ENG-RULE01：终局改为「只剩一人手里有牌」，余牌全部计入败牌
+ *
+ * 产品规则原话：「最后手里还剩余牌的时候余下的玩家是需要继续打的，直到打到只剩下
+ * 一个人手里有牌，手里的牌也要计入失败牌数」。
+ * 两条落点：playCard 尾部 与 pickUp 补牌之后，都必须在 resolveNext 之前先看 holders。
+ * ============================================================ */
+
+const holdersOf = (room) => room.players.filter((p) => p.hand.length > 0);
+
+/**
+ * 造一个「桌面已清空、当前玩家可任意出牌」的残局：手牌完全由调用方指定（第 0 位为当前玩家）。
+ * 直接绕开 startGame 的发牌，才能把「谁手里还剩几张」钉死成确定性局面。
+ */
+function makeEndgameSeats(hands) {
+  const room = createRoom('END');
+  const list = hands.map((_, i) => mkPlayer(`E${i}`));
+  list.forEach((p) => addPlayer(room, p));
+  room.phase = 'playing';
+  room.direction = 1;
+  room.topCard = null;
+  room.topCount = 1;
+  room.tablePile = [];
+  room.currentPlayerId = list[0].id;
+  list.forEach((p, i) => { p.hand = hands[i].slice(); });
+  return { room, list };
+}
+
+test('新终局规则：3 人局 A 出完不终局；B 出完（只剩 C 有牌）才终局，C 的手牌全部计入败牌', () => {
+  const { room, list } = makeEndgameSeats([
+    [MONSTER('4')],
+    [MONSTER('6')],
+    [MONSTER('7'), MONSTER('9')],
+  ]);
+  const [a, b, c] = list;
+
+  const r1 = playCard(room, a.id, [a.hand[0].id]);
+  assert.strictEqual(r1.action, 'played', 'A 出完了，但 B/C 还有牌 → 不得终局');
+  assert.strictEqual(room.phase, 'playing');
+  assert.strictEqual(room.currentPlayerId, b.id, '回合正常交给下一位有牌的人');
+  assert.deepStrictEqual(holdersOf(room).map((p) => p.id), [b.id, c.id], '此时仍有 2 人手上有牌');
+
+  const r2 = playCard(room, b.id, [b.hand[0].id]);
+  assert.strictEqual(r2.action, 'gameOver', 'B 出完 → 只剩 C 有牌 → 立即终局');
+  assert.strictEqual(room.phase, 'settling');
+  assert.strictEqual(c.hand.length, 0, 'C 剩余手牌必须被转出');
+  assert.strictEqual(c.penaltyPile.length, 2, '转移数量 === 转移前手牌数（2 张）');
+  assert.strictEqual(room.currentPlayerId, null, '终局后不得再有 currentPlayerId');
+  assert.strictEqual(holdersOf(room).length, 0, '终局后全场手牌皆空');
+  assert.strictEqual(
+    room.lastResult.results.find((r) => r.id === c.id).penaltyCount,
+    2,
+    'penaltyCount 语义不变：手牌并入 penaltyPile 后自然体现（未新增字段）'
+  );
+});
+
+test('新终局规则：2 人局 A 出完立即终局，B 从未出过的手牌也全部计入败牌（增量精确）', () => {
+  const { room, list } = makeEndgameSeats([
+    [MONSTER('4')],
+    [MONSTER('6'), MONSTER('7'), MONSTER('K')],
+  ]);
+  const [a, b] = list;
+  b.penaltyPile = [MONSTER('9')]; // B 之前已有 1 张败牌，用来验证「增量」而不是「覆盖」
+  const pileBefore = b.penaltyPile.length;
+  const handBefore = b.hand.length;
+
+  const ret = playCard(room, a.id, [a.hand[0].id]);
+
+  assert.strictEqual(ret.action, 'gameOver', '2 人局 A 出完 → 只剩 B 有牌 → 立即终局');
+  assert.strictEqual(room.phase, 'settling');
+  assert.strictEqual(b.hand.length, 0, '转移后 hand 必须清空');
+  assert.strictEqual(b.penaltyPile.length, pileBefore + handBefore, 'penaltyPile 增量 === 转移前 hand.length');
+  assert.strictEqual(b.penaltyPile.filter((x) => x.rank === 'K').length, 1, '原来是手牌的那张 K 现在在败牌堆里');
+  assert.ok(
+    room.eventLog.some((m) => m.includes('手里剩 3 张') && m.includes('全部计入败牌')),
+    `事件日志必须写清「剩 N 张全部计入败牌」（实际日志：${JSON.stringify(room.eventLog)}）`
+  );
+});
+
+test('新终局规则：收牌补牌后只剩收牌者有牌 → 也立刻终局（判定不能只加在 playCard）', () => {
+  const { room, list } = makeEndgameSeats([[MONSTER('4'), MONSTER('6')], [], []]);
+  const [p0] = list;
+  room.topCard = MONSTER('7');
+  room.topCount = 1;
+  room.tablePile = [MONSTER('7')];
+  room.drawPile = []; // 补不了牌
+  assert.strictEqual(holdersOf(room).length, 1, '前置：只剩收牌者手里有牌');
+
+  const ret = pickUp(room, p0.id);
+
+  assert.strictEqual(ret.action, 'gameOver', 'pickUp 之后也必须做同一判定');
+  assert.strictEqual(room.phase, 'settling');
+  assert.strictEqual(p0.hand.length, 0);
+  assert.strictEqual(p0.penaltyPile.length, 3, '桌面 1 张 + 手牌 2 张 = 3');
+  assert.strictEqual(room.currentPlayerId, null);
+});
+
+test('兜底：出牌后全场手牌皆空（holders=0）→ 结算，且不做手牌转移', () => {
+  const { room, list } = makeEndgameSeats([[MONSTER('4')], [], []]);
+  const [p0] = list;
+
+  const ret = playCard(room, p0.id, [p0.hand[0].id]);
+
+  assert.strictEqual(ret.action, 'gameOver');
+  assert.strictEqual(room.phase, 'settling');
+  assert.strictEqual(room.tablePile.length, 1, '打出的牌留在桌面（不并入任何人败牌堆）');
+  for (const p of room.players) assert.strictEqual(p.penaltyPile.length, 0, '兜底路径不得凭空产生败牌');
+  assert.ok(room.lastResult, '兜底路径同样要产出 lastResult');
+});
+
+test('兜底：全场手牌皆空时收牌不抛错（无手牌可转移，桌面仍进败牌堆）', () => {
+  const { room, list } = makeEndgameSeats([[], [], []]);
+  const [p0] = list;
+  room.topCard = MONSTER('7');
+  room.topCount = 1;
+  room.tablePile = [MONSTER('4'), MONSTER('7')];
+  room.drawPile = [];
+
+  let ret;
+  assert.doesNotThrow(() => { ret = pickUp(room, p0.id); }, 'holders=0 时收牌不得抛错');
+
+  assert.strictEqual(ret.action, 'gameOver');
+  assert.strictEqual(room.phase, 'settling');
+  assert.strictEqual(p0.penaltyPile.length, 2, '桌面 2 张仍计入收牌者败牌堆');
+  assert.strictEqual(room.currentPlayerId, null);
+});
+
+test('新终局规则：终局后任何玩家都不能再出牌/收牌（不残留回合）', () => {
+  const { room, list } = makeEndgameSeats([[MONSTER('4')], [MONSTER('6')]]);
+  const [a, b] = list;
+  playCard(room, a.id, [a.hand[0].id]);
+  assert.strictEqual(room.phase, 'settling');
+
+  for (const p of room.players) {
+    assert.throws(() => playCard(room, p.id, ['whatever']), (e) => e.code === 'BAD_PHASE', `${p.name} 终局后不得出牌`);
+    assert.throws(() => pickUp(room, p.id), (e) => e.code === 'BAD_PHASE', `${p.name} 终局后不得收牌`);
+  }
+  assert.strictEqual(room.currentPlayerId, null);
+});
+

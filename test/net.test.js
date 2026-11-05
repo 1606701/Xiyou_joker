@@ -177,18 +177,26 @@ function forceNoLegalMoves(h) {
   return { host, victimSocket, me, victim, code, room, high };
 }
 
-/** 构造已进入 settling 的房间（当前玩家无牌可出 + 摸牌堆已空 → 收牌即终局） */
+/**
+ * 构造已进入 settling 的房间。
+ * W3-ENG-RULE01 之后「摸牌堆空 + 收牌即终局」这条路径已被产品规则移除，
+ * 终局条件改为「只剩一人手里有牌，余牌全部计入败牌」。所以这里造残局：
+ * 其他人都已出完（hand=[]），房主手里留 2 张、出一张 → 触发终局，
+ * 剩的那张自动并入败牌堆（顺带在协议层覆盖「余牌计入败牌」）。
+ */
 function forceSettle(h) {
   const { host, others, code, room } = startThree(h);
   const cur = playerOf(room, host);
-  const top = MONSTER('K');
-  room.topCard = top;
+  room.topCard = null; // 开轮：任一手牌都能出，残局一步走完
   room.topCount = 1;
-  room.tablePile = [top];
+  room.tablePile = [];
   room.drawPile = [];
-  cur.hand = [MONSTER('4')];
+  for (const p of room.players) p.hand = [];
+  cur.hand = [MONSTER('4'), MONSTER('6')];
   host.clear();
-  host.send('pickUp');
+  host.send('playCard', { cardIds: [cur.hand[0].id] });
+  assert.strictEqual(room.phase, 'settling', '前置条件：应进入结算');
+  assert.strictEqual(cur.hand.length, 0, '前置条件：剩余手牌应已全部计入败牌');
   return { host, others, code, room, cur };
 }
 
