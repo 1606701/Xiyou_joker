@@ -19,10 +19,44 @@
  * 断言会退化成恒真（即「看着有覆盖，实际什么都没测」）。所以定时器护栏集中在 N3，
  * 且 N3 用 1 小时超时，让「只有显式 clearTimeout 才能让定时器从账本消失」成立。
  *
- * 【阴性对照（变异验证，落地时实测）】
- * - 删掉 playCard 处理器里的 `clearPlayerTimers(socket.playerId)` → N3 红；
- * - 删掉 `closeOutLastHolder` 里的 `last.penaltyPile.push(...last.hand)` → N4 红（守恒被破坏）；
- * - 把 scheduleAI 的 `if (res.action === 'gameOver') sendGameEnd(room)` 改成 `if (false)` → N4 红。
+ * 【阴性对照（变异验证，实测：每项连跑 10 次）】
+ * - 删掉 playCard 处理器里的 `clearPlayerTimers(socket.playerId)` → N3 红（确定性 10/10）。
+ *   红在「定时器账本非空」，报错形如 `实际 [{"kind":"timeout","delay":3600000}]` —— 与竞速无关。
+ * - 删掉 `closeOutLastHolder` 里的 `last.penaltyPile.push(...last.hand)` → N4 红（确定性 10/10）。
+ *   红在「54 张牌必须守恒」（`53 !== 54`）—— 也**与竞速无关**，别和下面那个概率问题混为一谈。
+ *
+ * 【为什么下面一律用函数名、不写行号】
+ * 这些行号一天之内漂过两次（缺陷修复往回调里插了守卫），写死行号等于给下一个人留一份过期地图。
+ * 函数名不会漂：「scheduleTurn 的定时器回调」永远指得住。
+ *
+ * ⚠ N4 对 `sendGameEnd` 的发射点只是**概率守卫**（实测：只关 scheduleTurn 回调的 settling 分支 →
+ *   红 9/30；只关 scheduleAI 回调的 gameOver 分支 → 红 12/20）。根因不是样本少：本用例是
+ *   「真人 + 2 AI」的实时对局，最后一手由 turnTimeoutMs 与 aiThinkMs 的竞速决定走了哪条路，
+ *   而这两条路径**互相兜底** —— 关掉一处，另一处照样把 gameEnd 发出去。
+ *   ⇒ 别把「关一处而 N4 没红」当成该发射点没有守卫的证据。
+ *
+ * ✅ 那到底有没有确定性守卫？**没有**。全仓六个 `sendGameEnd` 发射点，逐点单点变异实测：
+ *   〔确定性，各有专门用例〕
+ *     · schedulePickup 定时器回调的 gameOver 分支（`托管自动收牌触发终局…`）
+ *     · playCard 事件处理器（`出牌触发终局：playCard → gameOver…`）
+ *     · pickUp 事件处理器（`收牌触发终局（余牌计入败牌）…`）
+ *   〔高概率但**不是**确定性，约 83%〕
+ *     · scheduleTurn 定时器回调的 settling 分支 —— 50/60 次
+ *     · scheduleAI 回调的 gameOver 分支 —— 与上条同源，同一批用例打红
+ *     ⇒ 这两处唯一的护栏是 `test/net.ai.test.js` 的 `★跨局连打 5 局`，它红在
+ *       `assert.strictEqual(host.all('gameEnd').length, round, …)`。用例名字讲的是「定时器峰值恒为 2」，
+ *       从名字看不出它还在守 gameEnd。**局数把它顶到约 83%，但永远到不了 100%**：
+ *       5 局里只要「被你关掉的那条路」一次都没走到最后一手，另一条就兜底，用例照绿。
+ *   〔完全无守卫，0/10〕
+ *     · scheduleAI 的 catch 块（AI 决策失败 → 降级 autoPlay 也失败 → 强制结算后发 gameEnd）。
+ *       要连吃两次注入抛出才可达 —— 已知缺口，不是遗漏。
+ *   ⇒ 那两个约 83% 的点**需要**各写一条白盒残局用例定点触发；连打再长也只是把概率往上抬，
+ *     抬不到 100%。别拿「连打 20 局」代替白盒：那是用 3 倍耗时把 17% 的漏检换成 2%。
+ *     （写白盒时的坑：定时器账本只记 `{kind:'timeout', delay}`，不区分 turn / pickup / ai。
+ *       要按 delay 认路径，必须让 turnTimeoutMs / disconnectedTurnMs / pickupDelayMs /
+ *       offlinePickupDelayMs / aiThinkMs / reconnectGraceMs 这 6 个值两两不等 —— 本文件 N3 的
+ *       harness 把其中 5 个都设成 1h，抄它必踩。断言写一行 `new Set([...]).size === 6`，
+ *       别写 15 行两两 `notStrictEqual`：人肉数对数一定会漏。）
  */
 
 const { test } = require('node:test');
@@ -156,6 +190,9 @@ function startThree(h) {
  * ============================================================ */
 test('N3 终局后 net 层不残留任何回合/收牌定时器（1h 超时：只有显式 clear 才能让它从账本消失）', async (t) => {
   // 全部定时器 1 小时：它们绝不会自己到点，「账本里还有东西」就等价于「漏清」。
+  // 注意：本用例把 reconnectGraceMs / turnTimeoutMs / disconnectedTurnMs / pickupDelayMs /
+  // offlinePickupDelayMs **五个都设成同一个 1h**（N3 不靠 delay 区分种类，只查账本是否为空）。
+  // 若将来真要按 delay 区分路径（见文件头「到底有没有确定性守卫」那段），必须先把这 6 个值全部拉开。
   const h = makeHarness();
   const ledger = installTimerLedger();
   t.after(() => { ledger.restore(); h.dispose(); });
