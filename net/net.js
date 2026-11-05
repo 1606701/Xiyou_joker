@@ -711,6 +711,11 @@ function initNet(io, rooms, timings = {}) {
       // 宽限期后仍未重连则移除（waiting 阶段直接移除；playing 阶段保留座位继续托管，
       // 但若全员掉线则整房删除，避免残留房间干扰新对局）
       const graceTimer = setTimeout(() => {
+        // 先把自己从宽限表里摘掉（P2-01 的配套）。Node 的 Timeout 不是 EventEmitter、没有
+        // 'close' 事件可以监听，所以只能在这里手动摘；不摘的话长时间运行的进程里这张表
+        // 只增不减，每个掉线过的人都会留一个已经触发过的手柄。
+        // 引用自己的 const 是安全的：回调在 setTimeout 返回之后才可能执行。
+        graceTimers.delete(graceTimer);
         // 宽限期内可能已重连（或被新连接接管），届时 fresh.socketId 会变；connected 已足够判定
         const fresh = getPlayer(room, player.id);
         if (!fresh || fresh.connected) return;
@@ -733,12 +738,10 @@ function initNet(io, rooms, timings = {}) {
         }
       }, T.reconnectGraceMs);
       if (typeof graceTimer.unref === 'function') graceTimer.unref();
-      // 进表，dispose 时才收得掉；定时器自己触发后要把自己摘掉，否则长时间运行的进程里
-      // 这张表只增不减（每个掉线过的人留一个已触发的手柄）。
+      // 进表，dispose 时才收得掉。摘除是定时器自己在回调第一行做的，不在这里挂监听：
+      // Node 的 Timeout 没有 'close' 事件，写 `graceTimer.on(...)` 只会静默不生效 ——
+      // 那种「看起来做了清理、实际没做」比不做更坏，因为它会让下一个人以为这张表会自清。
       graceTimers.add(graceTimer);
-      const dropGrace = () => graceTimers.delete(graceTimer);
-      if (typeof graceTimer.on === 'function') graceTimer.on('close', dropGrace);
-      else graceTimer[Symbol.dispose] = dropGrace;
       return player;
     }
 
