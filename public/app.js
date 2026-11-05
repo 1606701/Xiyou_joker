@@ -445,11 +445,20 @@ function renderSeats(st) {
   });
 }
 
+/**
+ * 有立绘的牌点，与 public/art/cards/<rank>.png 一一对应（由 tools/build-card-art.py 产出）。
+ * 功能牌 A / 2 故意不在此列：它们没有角色，硬塞一张立绘反而读不出「跳过 / 反转」，
+ * 保持纸底大字比配图更清楚。要加牌就同时加图片和 style.css 里的 --art 规则，
+ * test/frontend.test.js 有一条用例专门盯着这三者是否对齐。
+ */
+const ART_RANKS = new Set(['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'SJ', 'BJ']);
+
 function cardHtml(card, extraCls = '') {
   const rank = S.rankShow[card.rank] || card.rank;
   const name = S.cardNames[card.rank] || rank;
   const isRed = card.suit === '♥' || card.suit === '♦';
-  return `<div class="card ${isRed ? 'suit-red ' : ''}${extraCls}" data-id="${escapeHtml(card.id)}">
+  const art = ART_RANKS.has(String(card.rank));
+  return `<div class="card ${isRed ? 'suit-red ' : ''}${art ? 'has-art ' : ''}${extraCls}" data-rank="${escapeHtml(String(card.rank))}" data-id="${escapeHtml(card.id)}">
     <span class="rank">${rank}</span>
     <span class="suit">${card.suit || ''}</span>
     <span class="role ${KIND_CLS[card.kind]}">${name}</span>

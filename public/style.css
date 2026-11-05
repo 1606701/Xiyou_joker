@@ -422,8 +422,14 @@ input[type="text"]::placeholder { color: var(--dim); }
   color: var(--muted);
   text-align: center;
   line-height: 1.6;
-  /* 正好两行：11px × 1.6 × 2 = 35.2px。写死 34px 会把第二行切掉半截字形 */
-  max-height: 3.2em;
+  /* 两行的高度账要这么算才不出错：
+   * 全局 * { box-sizing: border-box }，所以 max-height 会把 padding-top(8px) 和
+   * border-top(1px) 一起算进去。3.2em 在 border-box 下只剩 26.2px 的内容区，
+   * 也就是 1.49 行 —— 第二行必然被水平切掉一半（真机截图复现过）。
+   * 改成 content-box 让上限只约束文字区：2 行 × 17.6px = 35.2px，
+   * 再给 3.35em(36.9px) 留 1.7px 余量，避免行高取整把降部裁掉。 */
+  box-sizing: content-box;
+  max-height: 3.35em;
   overflow: hidden;
   /* 压在 #fx（z-index 5）之上：冲击波散开时会经过日志区，文字不能被声波糊住 */
   position: relative;
@@ -495,6 +501,82 @@ input[type="text"]::placeholder { color: var(--dim); }
 .card .role.disciple { background: var(--k-disciple); }
 .card .role.master { background: var(--k-master); }
 .card .role.action { background: var(--k-action); }
+
+/* ===== 卡面立绘（public/art/cards/<rank>.png，5:7 与 .card 完全一致，cover 不会裁） =====
+ * 有立绘的牌把点数/花色缩到左上角、让出整张画面；角色名条压在底部渐隐上。
+ * 没有立绘的牌（A 跳过 / 2 反转）保持原来的纸底居中大字 —— 功能牌没有角色可画，
+ * 硬配一张图反而读不出「跳过/反转」。
+ */
+.card[data-rank="3"]  { --art: url('/art/cards/3.png'); }
+.card[data-rank="4"]  { --art: url('/art/cards/4.png'); }
+.card[data-rank="5"]  { --art: url('/art/cards/5.png'); }
+.card[data-rank="6"]  { --art: url('/art/cards/6.png'); }
+.card[data-rank="7"]  { --art: url('/art/cards/7.png'); }
+.card[data-rank="8"]  { --art: url('/art/cards/8.png'); }
+.card[data-rank="9"]  { --art: url('/art/cards/9.png'); }
+.card[data-rank="10"] { --art: url('/art/cards/10.png'); }
+.card[data-rank="J"]  { --art: url('/art/cards/J.png'); }
+.card[data-rank="Q"]  { --art: url('/art/cards/Q.png'); }
+.card[data-rank="K"]  { --art: url('/art/cards/K.png'); }
+.card[data-rank="SJ"] { --art: url('/art/cards/SJ.png'); }
+.card[data-rank="BJ"] { --art: url('/art/cards/BJ.png'); }
+
+.card.has-art {
+  background: var(--art) center / cover no-repeat;
+  border-color: rgba(224, 180, 92, .34);
+}
+/* 底部渐隐：名字条（.role）自带底色，但在浅色衣袍上仍会飘，
+ * 垫一层墨绿渐变把它的下落压住，同时不挡脸。 */
+.card.has-art::before {
+  content: '';
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 52%;
+  background: linear-gradient(to top,
+    rgba(11, 29, 24, .96) 0%,
+    rgba(11, 29, 24, .72) 34%,
+    rgba(11, 29, 24, .28) 66%,
+    transparent 100%);
+  pointer-events: none;
+}
+/* 左上角点数：立绘是深底，墨字看不见。做成一块固定的深色底板比给文字加投影好——
+ * 光靠 text-shadow 时，点数仍然像「飘在脸上的一行字」；
+ * 有成块的底板，观感才是「牌角盖了个印记」，压在头发上也读得出来。
+ * 底板宽度写死 19px：点数最大是「10」，11px 等宽数字约 12px，装得下；
+ * 写死而不是让内容撑开，是为了让下面的花色和号码永远居中对齐。 */
+.card.has-art .rank {
+  position: absolute;
+  /* 不能用 2px：卡片 border-radius 是 8px，圆角在 (8,8) 处内切，
+   * (2,2) 落在半径外会被裁掉一个角。4/5px 才在可视区内。 */
+  top: 5px;
+  left: 4px;
+  box-sizing: border-box;
+  width: 19px;
+  font-size: 11px;
+  line-height: 12px;
+  /* 下内边距把花色也圈进同一块底板，视觉上是一整块，不是两块小牌 */
+  padding: 1px 0 13px;
+  text-align: center;
+  border-radius: 4px;
+  background: rgba(11, 29, 24, .84);
+  color: var(--gold-2);
+  text-shadow: none;
+}
+.card.has-art .suit {
+  position: absolute;
+  top: 16px;
+  left: 4px;
+  box-sizing: border-box;
+  width: 19px;
+  font-size: 9px;
+  line-height: 11px;
+  text-align: center;
+  background: rgba(11, 29, 24, .84);
+  color: var(--gold-2);
+  text-shadow: none;
+}
+/* 红桃/方块在墨绿底上用原 #B23A3A 会糊成一团黑，提亮成珊瑚红 */
+.card.has-art.suit-red .suit { color: #F2948B; }
 
 .card.back {
   background: repeating-linear-gradient(45deg, #1C3A32, #1C3A32 6px, #24473C 6px, #24473C 12px);

@@ -616,3 +616,78 @@ test('★FX 节点：拿不到 animationend（减弱动效 / 后台标签页）�
 });
 
 
+
+/* ================= 场景 16：卡面立绘 —— 牌点/样式/图片三者必须对齐 ================= */
+test('★卡面立绘：13 个角色牌挂 has-art + data-rank，功能牌 A/2 不挂', () => {
+  const r = makeRig();
+  r.socket.fire('roomJoined', { roomCode: '888', youId: 'p0', rejoinToken: 'tk', state: stPlay(null, 0) });
+
+  // 孙悟空（5）
+  r.socket.fire('state', stPlay({ rank: '5', suit: '♠', kind: 'disciple' }, 1));
+  const top = r.getEl('#topCard').innerHTML;
+  assert.ok(top.includes('has-art'), '角色牌必须挂 has-art（否则立绘样式一条都不会命中）');
+  assert.ok(top.includes('data-rank="5"'), '必须带 data-rank，style.css 靠它选 --art');
+
+  // 小王变体 SJ 也要命中（rankShow 会把它显示成「小王」，判断必须用原始 rank）
+  r.socket.fire('state', stPlay({ rank: 'SJ', suit: '★', kind: 'monster' }, 2));
+  assert.ok(r.getEl('#topCard').innerHTML.includes('data-rank="SJ"'), 'SJ 也要带 data-rank');
+
+  // 功能牌：跳过（A）
+  r.socket.fire('state', stPlay({ rank: 'A', suit: '♦', kind: 'action' }, 3));
+  const act = r.getEl('#topCard').innerHTML;
+  assert.ok(!act.includes('has-art'), '功能牌不得挂 has-art —— 没有角色可画，要留纸底大字');
+  assert.ok(act.includes('data-rank="A"'), '功能牌仍要带 data-rank（将来加图只改一处）');
+});
+
+test('★资产一致性：ART_RANKS ↔ style.css 的 --art 规则 ↔ 磁盘 PNG，缺一张就红', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const css = fs.readFileSync(path.join(__dirname, '..', 'public', 'style.css'), 'utf8');
+  const artDir = path.join(__dirname, '..', 'public', 'art', 'cards');
+
+  // 与 lib/cards.js 的 CARD_NAMES 对齐：这 13 个是有角色的牌
+  const CHAR_RANKS = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'SJ', 'BJ'];
+
+  const r = makeRig();
+  r.socket.fire('roomJoined', { roomCode: '888', youId: 'p0', rejoinToken: 'tk', state: stPlay(null, 0) });
+
+  for (const rank of CHAR_RANKS) {
+    r.socket.fire('state', stPlay({ rank, suit: '♠', kind: 'monster' }, 1));
+    assert.ok(r.getEl('#topCard').innerHTML.includes('has-art'), `${rank} 应挂 has-art`);
+
+    assert.ok(css.includes(`--art: url('/art/cards/${rank}.png')`),
+      `style.css 缺少 ${rank} 的 --art 规则：牌会挂 has-art 但没有背景图，渲染成空牌`);
+    assert.ok(fs.existsSync(path.join(artDir, `${rank}.png`)),
+      `public/art/cards/${rank}.png 不存在：CSS 会 404，牌面变空白`);
+  }
+
+  // 反向：A / 2 绝不能有 --art 规则（否则会去请求不存在的图）
+  for (const rank of ['A', '2']) {
+    assert.ok(!css.includes(`/art/cards/${rank}.png`), `${rank} 是功能牌，不该有立绘规则`);
+  }
+
+  // 反向：磁盘上不该有孤儿图（有图没规则 = 白生成了，纯浪费体积）
+  const files = fs.readdirSync(artDir).filter((f) => f.endsWith('.png')).map((f) => f.replace(/\.png$/, ''));
+  const extra = files.filter((f) => !CHAR_RANKS.includes(f));
+  assert.deepStrictEqual(extra, [], `art/cards 里有未接线的孤儿图: ${extra.join(', ')}`);
+});
+
+/* ================= 场景 17：布局陷阱护栏 ================= */
+test('★事件日志：max-height 必须与 box-sizing: content-box 成对出现', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const css = fs.readFileSync(path.join(__dirname, '..', 'public', 'style.css'), 'utf8');
+
+  // style.css 顶部有 * { box-sizing: border-box }，于是 max-height 会把
+  // padding-top(8px) 和 border-top(1px) 一起算进去。日志要露出 2 行共 35.2px，
+  // 在 border-box 下内容区只剩 26.2px ≈ 1.49 行，第二行必然被水平切半。
+  // 这是纯布局问题，假 DOM 没有排版引擎测不出来，只能锁住这条样式约定。
+  // 必须先剥注释：规则块里可能写着 "* { box-sizing: border-box }" 这类示例，
+  // 那个 } 会让 [^}]* 提前截断，于是断言在「其实已经修好」的情况下假红。
+  const bare = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const block = bare.match(/\.event-log\s*\{[^}]*\}/);
+  assert.ok(block, 'style.css 里找不到 .event-log 规则');
+  assert.ok(/max-height\s*:/.test(block[0]), '.event-log 应保留 max-height 作为条数护栏');
+  assert.ok(/box-sizing\s*:\s*content-box/.test(block[0]),
+    '.event-log 设了 max-height 却没改回 content-box —— 第二行会被切掉一半（真机复现过）');
+});
