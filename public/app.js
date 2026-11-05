@@ -752,6 +752,26 @@ function bindEvents() {
     });
   }
 
+  // 背景音乐开关：与音效完全独立（音乐不经过音效音量，见 audio.js 的 BGM 电平链）
+  const bgmBtn = $('#btnBgm');
+  if (bgmBtn && bgmBtn.addEventListener) {
+    const paintBgm = (on) => {
+      bgmBtn.classList.toggle('off', !on);
+      if (bgmBtn.setAttribute) bgmBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    };
+    const bgmOnNow = (typeof window !== 'undefined' && window.Sfx && window.Sfx.isBgmOn)
+      ? window.Sfx.isBgmOn()
+      : true;
+    paintBgm(bgmOnNow);
+    bgmBtn.addEventListener('click', () => {
+      const on = (typeof window !== 'undefined' && window.Sfx && window.Sfx.toggleBgm)
+        ? window.Sfx.toggleBgm()
+        : false;
+      paintBgm(on);
+      toast(on ? '背景音乐已开启' : '背景音乐已关闭');
+    });
+  }
+
   // 全局按钮点击音：全项目唯一绑在 DOM 层的声音（见调色板 §3）。
   // 用捕获阶段，保证即使某个按钮的 handler 提前 return，点击仍然有反馈。
   if (typeof document !== 'undefined' && document.addEventListener) {

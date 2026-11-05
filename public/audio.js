@@ -18,6 +18,7 @@
 (function () {
   const KEY_MUTE = 'xyj.audio.muted';
   const KEY_VOL = 'xyj.audio.volume';
+  const KEY_BGM = 'xyj.audio.bgm';
 
   /** D 宫五声 15 个频点（A4=440 十二平均律） */
   const NOTE = {
@@ -110,6 +111,13 @@
       userGain.connect(muteGain);
       muteGain.connect(limiter);
       limiter.connect(ctx.destination);
+      // BGM 直连 limiter，既绕过 userGain（音效音量）也绕过 muteGain（音效静音）：
+      // 顶栏是两个独立开关，「关音效」不该顺手把音乐也掐了。
+      // 仍过 limiter 是为了和音效共用同一道限幅，两者叠加时不会糊掉。
+      const bgm = ctx.createGain();
+      bgm.gain.value = 0.0001;
+      bgm.connect(limiter);
+      BGM.gain = bgm;
       noiseBuf = makeNoiseBuffer(ctx);
       applyGains();
       return ctx;
@@ -330,11 +338,38 @@
     }
   }
 
-  /** 首次手势里调用：建 context 并 resume */
+  /**
+   * 首次手势里调用：建 context 并 resume。
+   *
+   * 关键点：**不能用 { once: true }**。resume() 有可能因为这次手势不被信任、
+   * 或者浏览器正处于某种中间态而不生效，context 会一直是 suspended。
+   * 一次性监听一旦被消耗，后面再怎么点都不会再试，用户就永久没声音、只能刷新。
+   * 所以改成「每次手势都试，成功（running）后才摘监听」。
+   */
   function unlock() {
     try {
       const c = ensureCtx();
-      if (c && c.state !== 'running') c.resume();
+      if (!c) return;
+      const settle = function () {
+        if (!c || c.state !== 'running') return false;
+        detachUnlock();
+        // 拿到 running 之后才真正起播 BGM：排进 suspended 的上下文等于冻住，
+        // 等 resume 时一次性涌出来，听起来像开头一串音糊在一起。
+        if (BGM.on && !BGM.timer) bgmStart();
+        return true;
+      };
+      if (settle()) return;
+      const p = c.resume();
+      if (p && typeof p.then === 'function') p.then(settle, function () { /* 下次手势再试 */ });
+    } catch (e) { /* 忽略 */ }
+  }
+
+  /** 成功解禁后摘掉监听（宿主不支持 removeEventListener 就算了，重试也无害） */
+  function detachUnlock() {
+    try {
+      if (typeof window.removeEventListener !== 'function') return;
+      window.removeEventListener('pointerdown', unlock, true);
+      window.removeEventListener('keydown', unlock, true);
     } catch (e) { /* 忽略 */ }
   }
 
@@ -352,10 +387,143 @@
     applyGains();
   }
 
-  // 首次手势解锁（两个都监听：iOS 有时不派发 keydown）
+  /* ---------- 背景音乐（生成式，仍然零素材） ----------
+   * 做法：一个 12 秒的五声循环（16 步 × 0.75s），每步最多一个拨弦音，
+   * 每 8 步垫一个低音持续音。全部走同一套 D 宫频点，所以与音效同调。
+   *
+   * 为什么不用 setInterval 直接发声：定时器抖动会让节奏漂。
+   * 这里用「提前排程」（lookahead）：每 250ms 检查一次，把未来 1.2 秒内的音
+   * 一次性排到 AudioContext 时间轴上，定时器晚到 200ms 也不影响听感。
+   */
+  const BGM_LEVEL = 0.16;      // 相对 muteGain 的最终电平（压得很低，只做氛围）
+  const BGM_STEP = 0.75;       // 每步 0.75 秒
+  const BGM_MELODY = [
+    'D4', 0, 'A4', 0, 'Fs4', 'E4', 0, 'D4',
+    0, 'B3', 'D4', 0, 'A3', 0, 'E4', 0,
+  ];
+
+  const BGM = {
+    on: read(KEY_BGM) !== '0',
+    gain: null,
+    timer: null,
+    nextTime: 0,
+    step: 0,
+  };
+
+  /**
+   * 定时器取用要防御：某些受限宿主（无 DOM 的沙箱、被 CSP / 特性策略裁掉的环境）
+   * 根本没有 setInterval。直接写 setInterval(...) 会在 BGM 启动处抛 ReferenceError，
+   * 而调用链上恰好有 try/catch，于是变成「音乐永远不出声且没人知道为什么」。
+   * 拿不到就明确降级为「不播 BGM」，音效完全不受影响。
+   */
+  const TIMER = (function () {
+    const w = typeof window !== 'undefined' ? window : null;
+    if (w && typeof w.setInterval === 'function' && typeof w.clearInterval === 'function') {
+      return { set: w.setInterval.bind(w), clear: w.clearInterval.bind(w) };
+    }
+    if (typeof setInterval === 'function' && typeof clearInterval === 'function') {
+      return { set: setInterval, clear: clearInterval };
+    }
+    return null;
+  })();
+
+  /** 低音持续音：两个正弦叠一个八度，慢起慢落，只做「底」 */
+  function bgmDrone(t) {
+    const c = ctx;
+    [NOTE.D2, NOTE.A2].forEach(function (f, i) {
+      const g = c.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(i === 0 ? 0.05 : 0.03, t + 1.2);
+      g.gain.linearRampToValueAtTime(0.0001, t + 5.4);
+      const osc = c.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(f, t);
+      osc.connect(g);
+      g.connect(BGM.gain);
+      osc.start(t);
+      osc.stop(t + 5.6);
+      osc.onended = function () { try { osc.disconnect(); g.disconnect(); } catch (e) { /* 已断开 */ } };
+    });
+  }
+
+  /** 拨弦音：三角形 + 低通，1.8 秒自然衰减，模拟古琴的余韵 */
+  function bgmNote(name, t) {
+    const c = ctx;
+    const f = NOTE[name];
+    if (!f) return;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.06, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 1.8);
+    const bq = c.createBiquadFilter();
+    bq.type = 'lowpass';
+    bq.frequency.setValueAtTime(2200, t);
+    bq.frequency.exponentialRampToValueAtTime(700, t + 1.8);
+    bq.Q.value = 0.7;
+    const osc = c.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(f, t);
+    osc.connect(g);
+    g.connect(bq);
+    bq.connect(BGM.gain);
+    osc.start(t);
+    osc.stop(t + 1.85);
+    osc.onended = function () { try { osc.disconnect(); g.disconnect(); bq.disconnect(); } catch (e) { /* 已断开 */ } };
+  }
+
+  function bgmSchedule() {
+    if (!ctx || !BGM.gain || !BGM.on) return;
+    if (ctx.state !== 'running') return;
+    const ahead = ctx.currentTime + 1.2;
+    // 首次排程从「现在 +0.3s」开始，避免立刻贴脸出声
+    if (!BGM.nextTime) BGM.nextTime = ctx.currentTime + 0.3;
+    let guard = 0;
+    while (BGM.nextTime < ahead && guard++ < 8) {
+      const i = BGM.step % BGM_MELODY.length;
+      const n = BGM_MELODY[i];
+      if (n) bgmNote(n, BGM.nextTime);
+      if (i === 0) bgmDrone(BGM.nextTime);
+      BGM.nextTime += BGM_STEP;
+      BGM.step += 1;
+    }
+  }
+
+  function bgmStart() {
+    const c = ensureCtx();
+    if (!c || !BGM.on) return false;
+    if (!BGM.gain) return false;
+    const t = c.currentTime;
+    BGM.gain.gain.cancelScheduledValues(t);
+    BGM.gain.gain.setValueAtTime(Math.max(0.0001, BGM.gain.gain.value), t);
+    BGM.gain.gain.linearRampToValueAtTime(BGM_LEVEL, t + 1.6);
+    BGM.nextTime = 0;
+    if (!BGM.timer && TIMER) BGM.timer = TIMER.set(bgmSchedule, 250);
+    bgmSchedule();
+    return !!BGM.timer;
+  }
+
+  function bgmStop() {
+    if (BGM.timer && TIMER) { TIMER.clear(BGM.timer); BGM.timer = null; }
+    if (!ctx || !BGM.gain) return;
+    const t = ctx.currentTime;
+    BGM.gain.gain.cancelScheduledValues(t);
+    BGM.gain.gain.setValueAtTime(Math.max(0.0001, BGM.gain.gain.value), t);
+    BGM.gain.gain.linearRampToValueAtTime(0.0001, t + 0.4);
+    BGM.nextTime = 0;
+  }
+
+  function toggleBgm() {
+    BGM.on = !BGM.on;
+    write(KEY_BGM, BGM.on ? '1' : '0');
+    if (BGM.on) bgmStart(); else bgmStop();
+    return BGM.on;
+  }
+
+  // 首次手势解锁（两个都监听：iOS 有时不派发 keydown）。
+  // 注意这里不带 once —— 是否摘监听由 unlock 内部在真正 running 后决定。
   try {
-    window.addEventListener('pointerdown', unlock, { once: true, passive: true });
-    window.addEventListener('keydown', unlock, { once: true });
+    window.addEventListener('pointerdown', unlock, { capture: true, passive: true });
+    window.addEventListener('keydown', unlock, { capture: true });
   } catch (e) { /* 老浏览器忽略 */ }
 
   window.Sfx = {
@@ -365,5 +533,22 @@
     setVolume: setVolume,
     isMuted: function () { return muted; },
     getVolume: function () { return volume; },
+    toggleBgm: toggleBgm,
+    isBgmOn: function () { return BGM.on; },
+    /**
+     * 只读诊断口：真机验收时无法「听」，只能问引擎自己。
+     * running 为 AudioContext 状态（suspended 说明还没拿到手势），
+     * level 应稳定在 0.16 附近（0.0001 说明起播被挡）。
+     */
+    bgmState: function () {
+      return {
+        on: BGM.on,
+        running: ctx ? ctx.state : null,
+        timer: !!BGM.timer,
+        level: BGM.gain ? BGM.gain.gain.value : null,
+      };
+    },
+    startBgm: bgmStart,
+    stopBgm: bgmStop,
   };
 })();
