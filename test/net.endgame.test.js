@@ -47,9 +47,12 @@
  *       `assert.strictEqual(host.all('gameEnd').length, round, …)`。用例名字讲的是「定时器峰值恒为 2」，
  *       从名字看不出它还在守 gameEnd。**局数把它顶到约 83%，但永远到不了 100%**：
  *       5 局里只要「被你关掉的那条路」一次都没走到最后一手，另一条就兜底，用例照绿。
- *   〔完全无守卫，0/10〕
+ *   〔确定性，由本文件 N5 守住 —— 补之前是 0/10 全绿，即无守卫〕
  *     · scheduleAI 的 catch 块（AI 决策失败 → 降级 autoPlay 也失败 → 强制结算后发 gameEnd）。
- *       要连吃两次注入抛出才可达 —— 已知缺口，不是遗漏。
+ *       它要连吃两次注入抛出才可达，所以 N5 的触发方式就是「注入两个抛出」：
+ *       `ai.chooseMove` 抛 + `engine.autoPlay` 也抛，`t.after` 里复原。
+ *       这条路径一旦破了，表现是**本项目最贵的故障模式**：0 个定时器 + 桌上没人能动 —— 所以
+ *       宁可强制结算让真人看到一句人话，也不能静默卡死。
  *   ⇒ 那两个约 83% 的点**需要**各写一条白盒残局用例定点触发；连打再长也只是把概率往上抬，
  *     抬不到 100%。别拿「连打 20 局」代替白盒：那是用 3 倍耗时把 17% 的漏检换成 2%。
  *     （写白盒时的坑：定时器账本只记 `{kind:'timeout', delay}`，不区分 turn / pickup / ai。
@@ -63,6 +66,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const engine = require('../lib/engine.js');
+const ai = require('../lib/ai.js');
 const { initNet } = require('../net/net.js');
 
 /* 真实定时器引用：账本会包住全局 setTimeout，等待逻辑必须用真的，否则会被自己记账 */
@@ -275,4 +279,90 @@ test('N4 真人+2AI 自动打完整局：settling + gameEnd + 54 张牌守恒且
   assert.strictEqual(ge.results.length, 3, 'gameEnd 必须覆盖全员');
   assert.strictEqual(ge.winnerIds[0], room.lastResult.winnerId, 'gameEnd.winnerIds 必须与 lastResult.winnerId 一致');
   assert.ok(ge.results.reduce((s, r) => s + r.penaltyCount, 0) <= 54, '败牌总数不得超 54');
+});
+
+/* ============================================================
+ * N5：scheduleAI 的两级降级都失败 → 必须强制结算并发 gameEnd
+ *
+ * 这是全仓六个 sendGameEnd 发射点里唯一长期无守卫的一个（补之前单点变异 0/10 全绿）。
+ * 它要连吃两次抛出才可达（AI 决策抛 + 托管 autoPlay 也抛），所以这里直接注入这两个抛出，
+ * 定点走到 catch 分支 —— 不用「打很多局碰运气」那种概率式覆盖。
+ *
+ * 为什么值得单独一条用例：这条路径一旦破了，表现是「0 个定时器 + 桌上三个人谁也不动」，
+ * 是本项目最贵的故障模式。宁可强制结算让真人看到一句人话，也不能静默卡死。
+ *
+ * 阴性对照（在 /d/tmp 的 worktree 副本里做，每个变异 10 次独立进程）：
+ *   M1 删 catch 里的 sendGameEnd          → 10/10 红（gameEnd 数量断言）
+ *   M2 删 catch 里给真人的 INTERNAL 提示   → 10/10 红（「已强制结算」断言）
+ *   M3 删 catch 里的 engine.settleGame     → 10/10 红（waitFor(settling) 超时）
+ *   M4 在 return 前挂 scheduleAI(1ms)      → 0/10 红 ← **变异写错了，不是断言松**
+ *      账本只记「在册且尚未触发」的定时器；1ms 的那只早已触发并自删，不算遗留。
+ *   M4b 错修法「重试而非结算」（挂 1h 回合定时器）→ 10/10 红（账本为空断言）
+ *   M5 删 catch 末尾的 return（落回常规路径）→ 10/10 红
+ * 结论：本用例五条主断言都能红。**「不留定时器」只对「挂上且还在等」的定时器有效**，
+ * 别把它当成「没有任何定时器被创建过」——那是两种不同的断言。
+ * ============================================================ */
+test('N5 AI 决策失败且托管也失败：必须强制结算 + 下发 gameEnd + 不留定时器（宁可结束本局，不可留死桌）', async (t) => {
+  const realChooseMove = ai.chooseMove;
+  const realAutoPlay = engine.autoPlay;
+  t.after(() => {
+    // 复原必须放在 after 里：断言失败也要复原，否则后续用例会继承一个会抛的引擎
+    ai.chooseMove = realChooseMove;
+    engine.autoPlay = realAutoPlay;
+  });
+
+  // 只有 aiThinkMs 短：其余定时器 1h，任何残留都会明晃晃挂在账本里
+  const h = makeHarness({ aiThinkMs: 1 });
+  const ledger = installTimerLedger();
+  t.after(() => { ledger.restore(); h.dispose(); });
+
+  const host = h.connect('qa-human');
+  host.send('createRoom', { nickname: '人类' });
+  const code = host.last('roomJoined').roomCode;
+  host.send('addAI');
+  host.send('addAI');
+  host.send('ready', { ready: true });
+  host.send('start');
+  const room = h.rooms.get(code);
+
+  assert.strictEqual(room.players.length, 3, '前置：1 真人 + 2 AI（本游戏最少 3 人，2 人开不了局）');
+  const human = room.players.find((p) => !p.isAI);
+  assert.ok(human, '前置：真人一名');
+
+  // 打断两级降级：AI 决策抛 + 托底选择器也抛 ⇒ 只有 catch(e2) 能接住
+  ai.chooseMove = () => { throw new Error('注入：AI 决策失败'); };
+  engine.autoPlay = () => { throw new Error('注入：托管也失败'); };
+
+  // 把回合交给 AI（开局先手可能是真人，也可能是 AI）
+  if (room.currentPlayerId === human.id) {
+    host.send('playCard', { cardIds: [human.hand[0].id] });
+  }
+  const actor = room.players.find((p) => p.id === room.currentPlayerId);
+  assert.ok(
+    actor && actor.isAI,
+    '前置：回合必须已交给 AI —— 否则本用例测的不是 scheduleAI 这条路径'
+  );
+
+  await waitFor(() => room.phase === 'settling', { timeout: 5000, label: '两级降级失败后强制结算' });
+
+  // lastResult 是 sendGameEnd 的前置：没有它，sendGameEnd 会静默早退（那一行在函数开头）
+  assert.ok(room.lastResult, '强制结算必须产出 lastResult，否则 gameEnd 会被静默吞掉');
+  assert.strictEqual(host.all('gameEnd').length, 1, '必须且只能下发 1 次 gameEnd');
+  assert.strictEqual(room.currentPlayerId, null, '强制结算后不得残留回合');
+
+  // 让真人看到人话，而不是盯着一张静止的牌桌
+  const internal = host.all('error').filter((e) => e && e.code === 'INTERNAL');
+  assert.ok(
+    internal.some((e) => e.message === '服务端异常，本局已强制结算'),
+    `真人必须收到「已强制结算」提示，实际收到 ${JSON.stringify(host.all('error'))}`
+  );
+
+  // 死桌的定义是「既没结算、也没定时器」；结算了且账本干净才算真的脱困
+  await sleep(30);
+  assert.deepStrictEqual(
+    ledger.timeouts().map((x) => x.delay),
+    [],
+    `强制结算后不得残留定时器（实际 ${JSON.stringify(ledger.timeouts())}）`
+  );
+  assert.strictEqual(room.phase, 'settling', '结算后不得被任何陈旧定时器改写阶段');
 });

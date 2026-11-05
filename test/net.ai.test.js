@@ -525,6 +525,10 @@ test('★跨局连打 5 局：net 定时器峰值恒为 2 不随局数增长，A
       minPenalty,
       `第 ${round} 局：通杀者必须是败牌最少者（${winner.name} ${winner.penaltyPile.length} 张 vs 最少 ${minPenalty} 张）`
     );
+    // ↓ 这一行别当成「顺带断言」删掉：它是 scheduleTurn 结算分支里 sendGameEnd 的**主要**护栏。
+    // 那条分支实测约 83%（5 局里只要有一次没走到最后一手，scheduleAI 那条路就兜底，本行照绿），
+    // 所以它只能把漏检压到约 17%，压不到 0。真正的确定性覆盖在 test/net.endgame.test.js 的 N5。
+    // 局数只是把概率往上抬，不是替代品。
     assert.strictEqual(host.all('gameEnd').length, round, `第 ${round} 局后：真人应恰好收到 ${round} 次 gameEnd`);
     assert.deepStrictEqual(host.all('error'), [], `第 ${round} 局为止：全程不应给真人推任何 error`);
 
