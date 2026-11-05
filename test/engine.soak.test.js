@@ -27,19 +27,31 @@ const { buildDeck } = require('../lib/cards.js');
 const SEED = 20261026;
 /** 局数（可经环境变量调小以加快本地调试，CI 默认 1000） */
 const GAMES = Number(process.env.SOAK_GAMES || 1000);
+
+const DECK_SIZE = buildDeck().length; // 54
+
 /**
- * 每轮步数上限（W3-ENG-RULE01 后的解析上界，不是拍脑袋的经验值）：
- *   出牌 ≤ 54（54 张牌每张只会离开手牌一次，不会再回来）+ 收牌 ≤ 出牌 + 1 ⇒ 109。
- * 超过它说明「牌在哪儿」出了问题（牌被复制 / 手牌没扣减 / 回合空转），而不是运气不好。
- * 完整论证见文件末尾「终止性」用例的注释。
+ * 每轮动作数上界 —— **派生量，不是魔数**（W3-ENG-RULE01 后的解析上界）：
+ *
+ *   出牌 ≤ DECK_SIZE：一张牌离开手牌后永不回到手牌（出牌 → tablePile → penaltyPile），
+ *     54 张牌各只可能离开手牌一次。
+ *   收牌 ≤ 出牌 + 1：收牌后桌面必空、收牌者成为开轮者，而开轮时任何手牌都合法
+ *     （功能牌也能单张出），且回合只会交给「手里有牌的人」⇒ 两次收牌之间至少有一次出牌。
+ *   两者不会同时取满：若收牌 = 出牌 + 1，说明最后一手是收牌，此时已无牌可出，
+ *     即出牌 ≤ DECK_SIZE - 1（最后那张牌若被打出，holders 归零当场结算，不会再有人收牌）。
+ *
+ * ⇒ 单轮动作 ≤ DECK_SIZE * 2 = 108。超过它说明「牌在哪儿」出了问题
+ * （牌被复制 / 手牌没扣减 / 回合空转），而不是运气不好。
+ * 实测（2 种策略 × 2 种人数 × 30 局固定 seed）最大 79，余量 1.37×。
+ *
+ * ⚠️ 这三条前提任何一条被新规则打破（牌能回手牌 / 开轮可能无合法牌 / 回合能给空手玩家），
+ *    这个上界都要**重新推导**，不是调大常数的事。完整论证见文件末尾「终止性」用例。
  */
-const MAX_ACTIONS_PER_ROUND = 109;
+const MAX_ACTIONS_PER_ROUND = DECK_SIZE * 2;
 /** 每轮步数上限：超过即视为死循环 */
 const MAX_STEPS_PER_GAME = MAX_ACTIONS_PER_ROUND;
 /** 每局打几轮（>1 时覆盖 nextRound → startGame 的二次开局路径） */
 const ROUNDS_PER_GAME = 2;
-
-const DECK_SIZE = buildDeck().length; // 54
 
 /** mulberry32：小而稳的可复现 PRNG */
 function mulberry32(a) {
@@ -256,100 +268,146 @@ test(`soak：${GAMES} 局随机对局 × ${ROUNDS_PER_GAME} 轮，逐步校验�
  *      且回合只会交给「手里有牌的人」（checkInvariants 里的不变量）——
  *      ⇒ 两次收牌之间至少有一次出牌 ⇒ 收牌次数 ≤ 出牌次数 + 1。
  *
- * 合计：单局动作数 ≤ 54 + 55 = 109。任何超过它的对局都说明「牌在哪儿」出了问题
- * （牌被复制 / 手牌没扣减 / 回合空转），而不是运气不好。
+ * 合计：单轮动作数 ≤ DECK_SIZE * 2 = 108（见文件顶部 MAX_ACTIONS_PER_ROUND 的推导）。
+ * 任何超过它的对局都说明「牌在哪儿」出了问题（牌被复制 / 手牌没扣减 / 回合空转），
+ * 而不是运气不好。
  * ============================================================ */
 const ENDGAME_GAMES = Number(process.env.SOAK_ENDGAME_GAMES || 30);
 
-test(`终止性：3 人与 6 人各 ${ENDGAME_GAMES} 局确定性对局必须在 ≤${MAX_ACTIONS_PER_ROUND} 步内走到 settling（seed=${SEED}）`, (t) => {
-  const rng = mulberry32(SEED);
+/**
+ * 两条选牌策略 —— **只加样本，不改判据**（三条上界断言一个字都不放宽）：
+ * - `first`：现行行为，取首个合法组合（≈ 最小可压），收牌次数少；
+ * - `strong`：按 engine.DISPLAY_ORDER **反向**取（打最强），专门逼出收牌，
+ *   压的是「收牌 ≤ 出牌 + 1」那条腿（QA 的 6000 轮压测中全局最大 79 步就出现在这条策略上）。
+ * 说明：DISPLAY_ORDER 本身就是牌力序（4<6<7<9<J<Q<K<SJ<BJ<3<8<5<10<A<2），
+ * 所以这里不再另写一张牌力表 —— 那种映射表最容易随规则漂移。
+ */
+const ENDGAME_ARMS = [
+  { label: 'first', seed: SEED, strategy: 'first' },
+  { label: 'strong', seed: 999, strategy: 'strong' },
+];
+
+/** 从合法动作里按策略挑一个（beats/actions 都来自引擎，策略输出 ⊆ 引擎认可） */
+function pickMove(hand, moves, strategy) {
+  const all = [...moves.beats, ...moves.actions.map((id) => [id])];
+  if (all.length === 0) return null;
+  if (strategy === 'first') return all[0];
+  const key = (ids) => (engine.DISPLAY_ORDER[hand.find((c) => c.id === ids[0]).rank] ?? 99) * 10 + ids.length;
+  let best = all[0];
+  for (const g of all) if (key(g) > key(best)) best = g;
+  return best;
+}
+
+test(`终止性：2 种选牌策略 × 3 人 / 6 人各 ${ENDGAME_GAMES} 局必须在 ≤${MAX_ACTIONS_PER_ROUND} 步内走到 settling`, (t) => {
   const realRandomNow = Math.random;
-  Math.random = rng; // engine.shuffle 依赖 Math.random
   t.after(() => {
     Math.random = realRandomNow;
   });
 
   const report = [];
 
-  for (const n of [3, 6]) {
-    let maxActions = 0;
-    let maxPlays = 0;
-    let totalActions = 0;
-    let carryOver = 0;
+  for (const arm of ENDGAME_ARMS) {
+    const rng = mulberry32(arm.seed);
+    Math.random = rng; // engine.shuffle 依赖同一个流，保证每个 arm 各自可复现
 
-    for (let gi = 0; gi < ENDGAME_GAMES; gi++) {
-      const room = engine.createRoom(String(500 + gi));
-      for (let i = 0; i < n; i++) {
-        engine.addPlayer(room, { id: `e${n}_${gi}_${i}`, name: `P${i}` });
-      }
-      for (const p of room.players) engine.setReady(room, p.id, true);
-      engine.startGame(room);
+    for (const n of [3, 6]) {
+      let maxActions = 0;
+      let maxPlays = 0;
+      let maxPickups = 0;
+      let totalActions = 0;
+      let carryOver = 0;
+      const where = (gi) => `[${arm.label}] ${n} 人局第 ${gi} 局`;
 
-      let plays = 0;
-      let pickups = 0;
-      const totalAtStart = room.players.reduce((s, p) => s + p.hand.length, 0) + room.drawPile.length;
-      assert.strictEqual(totalAtStart, DECK_SIZE, `${n} 人局第 ${gi} 局：开局牌数应为 ${DECK_SIZE}`);
-
-      let steps = 0;
-      let prevHandTotalWhenDrawEmpty = null;
-      while (room.phase === 'playing') {
-        steps += 1;
-        assert.ok(steps <= MAX_ACTIONS_PER_ROUND * 2, `${n} 人局第 ${gi} 局超过 ${MAX_ACTIONS_PER_ROUND * 2} 步仍未结束 → 死循环`);
-
-        const cur = room.players.find((p) => p.id === room.currentPlayerId);
-        assert.ok(cur && cur.hand.length > 0, `${n} 人局第 ${gi} 局第 ${steps} 步：回合不得落在 0 手牌玩家身上`);
-
-        const moves = engine.computeLegalMoves(room, cur.id);
-        if (moves.beats.length > 0 || moves.actions.length > 0) {
-          const ids = moves.beats.length > 0 ? moves.beats[0] : [moves.actions[0]];
-          engine.playCard(room, cur.id, ids);
-          plays += 1;
-        } else {
-          engine.pickUp(room, cur.id);
-          pickups += 1;
+      for (let gi = 0; gi < ENDGAME_GAMES; gi++) {
+        const room = engine.createRoom(String(500 + gi));
+        for (let i = 0; i < n; i++) {
+          engine.addPlayer(room, { id: `e${arm.label}_${n}_${gi}_${i}`, name: `P${i}` });
         }
+        for (const p of room.players) engine.setReady(room, p.id, true);
+        engine.startGame(room);
 
-        // 摸牌堆空之后：全场手牌总数必须单调不增（新规则下「继续打」的唯一收敛来源）
-        if (room.drawPile.length === 0) {
-          const handTotal = room.players.reduce((s, p) => s + p.hand.length, 0);
-          if (prevHandTotalWhenDrawEmpty !== null && room.phase === 'playing') {
-            assert.ok(
-              handTotal <= prevHandTotalWhenDrawEmpty,
-              `${n} 人局第 ${gi} 局第 ${steps} 步：摸牌堆空后手牌总数不得增加（${prevHandTotalWhenDrawEmpty} → ${handTotal}）`
-            );
+        let plays = 0;
+        let pickups = 0;
+        const totalAtStart = room.players.reduce((s, p) => s + p.hand.length, 0) + room.drawPile.length;
+        assert.strictEqual(totalAtStart, DECK_SIZE, `${where(gi)}：开局牌数应为 ${DECK_SIZE}`);
+
+        let steps = 0;
+        let prevHandTotalWhenDrawEmpty = null;
+        while (room.phase === 'playing') {
+          steps += 1;
+          assert.ok(
+            steps <= MAX_ACTIONS_PER_ROUND * 2,
+            `${where(gi)} 超过 ${MAX_ACTIONS_PER_ROUND * 2} 步仍未结束 → 死循环`
+          );
+
+          const cur = room.players.find((p) => p.id === room.currentPlayerId);
+          assert.ok(cur && cur.hand.length > 0, `${where(gi)} 第 ${steps} 步：回合不得落在 0 手牌玩家身上`);
+
+          const moves = engine.computeLegalMoves(room, cur.id);
+          const pick = pickMove(cur.hand, moves, arm.strategy);
+          if (pick) {
+            engine.playCard(room, cur.id, pick);
+            plays += 1;
+          } else {
+            engine.pickUp(room, cur.id);
+            pickups += 1;
           }
-          prevHandTotalWhenDrawEmpty = handTotal;
+
+          // 摸牌堆空之后：全场手牌总数必须单调不增（新规则下「继续打」的唯一收敛来源）
+          if (room.drawPile.length === 0) {
+            const handTotal = room.players.reduce((s, p) => s + p.hand.length, 0);
+            if (prevHandTotalWhenDrawEmpty !== null && room.phase === 'playing') {
+              assert.ok(
+                handTotal <= prevHandTotalWhenDrawEmpty,
+                `${where(gi)} 第 ${steps} 步：摸牌堆空后手牌总数不得增加（${prevHandTotalWhenDrawEmpty} → ${handTotal}）`
+              );
+            }
+            prevHandTotalWhenDrawEmpty = handTotal;
+          }
         }
+
+        const actions = plays + pickups;
+        assert.strictEqual(room.phase, 'settling', `${where(gi)} 必须走到 settling（实际 phase=${room.phase}）`);
+        assert.ok(plays <= DECK_SIZE, `${where(gi)} 出牌 ${plays} 次 > ${DECK_SIZE}：牌被复制或手牌没扣减`);
+        assert.ok(
+          pickups <= plays + 1,
+          `${where(gi)} 收牌 ${pickups} 次 > 出牌 ${plays} + 1：出现连续空收牌（回合空转）`
+        );
+        assert.ok(
+          actions <= MAX_ACTIONS_PER_ROUND,
+          `${where(gi)} 动作数 ${actions} 超出解析上界 ${MAX_ACTIONS_PER_ROUND}`
+        );
+        assert.strictEqual(room.currentPlayerId, null, `${where(gi)} 终局后不得有 currentPlayerId`);
+        for (const p of room.players) {
+          assert.strictEqual(p.hand.length, 0, `${where(gi)} 终局后 ${p.name} 手里还留着牌`);
+        }
+        // 终局后也要复核牌守恒（QA 复核补）：只「hand=[]」而不并入败牌堆会把牌吞掉，
+        // 这种变异在单跑本用例时不会被上面的断言发现（那也是 hand=0），只有这里能抓住。
+        const zonesTotal = room.drawPile.length + room.tablePile.length +
+          room.players.reduce((s2, p) => s2 + p.hand.length + p.penaltyPile.length, 0);
+        assert.strictEqual(
+          zonesTotal,
+          DECK_SIZE,
+          `${where(gi)} 终局后牌不守恒（${zonesTotal} != ${DECK_SIZE}）：余牌被吞或牌被复制`
+        );
+        if (room.eventLog.some((m) => m.includes('全部计入败牌'))) carryOver += 1;
+
+        maxActions = Math.max(maxActions, actions);
+        maxPlays = Math.max(maxPlays, plays);
+        maxPickups = Math.max(maxPickups, pickups);
+        totalActions += actions;
       }
 
-      const actions = plays + pickups;
-      assert.strictEqual(room.phase, 'settling', `${n} 人局第 ${gi} 局必须走到 settling（实际 phase=${room.phase}）`);
-      assert.ok(plays <= DECK_SIZE, `${n} 人局第 ${gi} 局出牌 ${plays} 次 > ${DECK_SIZE}：牌被复制或手牌没扣减`);
-      assert.ok(pickups <= plays + 1, `${n} 人局第 ${gi} 局收牌 ${pickups} 次 > 出牌 ${plays} + 1：出现连续空收牌（回合空转）`);
       assert.ok(
-        actions <= MAX_ACTIONS_PER_ROUND,
-        `${n} 人局第 ${gi} 局动作数 ${actions} 超出解析上界 ${MAX_ACTIONS_PER_ROUND}`
+        carryOver > 0,
+        `[${arm.label}] ${n} 人局：${ENDGAME_GAMES} 局里从未走「余牌计入败牌」的新终局路径，覆盖不足`
       );
-      assert.strictEqual(room.currentPlayerId, null, `${n} 人局第 ${gi} 局终局后不得有 currentPlayerId`);
-      for (const p of room.players) assert.strictEqual(p.hand.length, 0, `${n} 人局第 ${gi} 局终局后 ${p.name} 手里还留着牌`);
-      // 终局后也要复核牌守恒（QA 复核补）：只「hand=[]」而不并入败牌堆会把牌吞掉，
-      // 这种变异在单跑本用例时不会被上面的断言发现（那也是 hand=0），只有这里能抓住。
-      const zonesTotal = room.drawPile.length + room.tablePile.length +
-        room.players.reduce((s2, p) => s2 + p.hand.length + p.penaltyPile.length, 0);
-      assert.strictEqual(
-        zonesTotal,
-        DECK_SIZE,
-        `${n} 人局第 ${gi} 局终局后牌不守恒（${zonesTotal} != ${DECK_SIZE}）：余牌被吞或牌被复制`
+      // 每个 arm 各自打印自己的最大值 —— 否则余量从 1.37× 掉到 1.05× 也没人看得见
+      report.push(
+        `${arm.label}(seed=${arm.seed}) ${n} 人局：最大动作 ${maxActions} / 最大出牌 ${maxPlays} / ` +
+          `最大收牌 ${maxPickups} / 合计 ${totalActions} 步 / 余牌计入败牌 ${carryOver}/${ENDGAME_GAMES} 局`
       );
-      if (room.eventLog.some((m) => m.includes('全部计入败牌'))) carryOver += 1;
-
-      maxActions = Math.max(maxActions, actions);
-      maxPlays = Math.max(maxPlays, plays);
-      totalActions += actions;
     }
-
-    assert.ok(carryOver > 0, `${n} 人局：${ENDGAME_GAMES} 局里从未走「余牌计入败牌」的新终局路径，覆盖不足`);
-    report.push(`${n} 人局：最大动作 ${maxActions} 步 / 最大出牌 ${maxPlays} 次 / 合计 ${totalActions} 步 / 余牌计入败牌 ${carryOver}/${ENDGAME_GAMES} 局`);
   }
 
   for (const line of report) t.diagnostic(line);

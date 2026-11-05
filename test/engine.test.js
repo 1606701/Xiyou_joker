@@ -581,6 +581,50 @@ test('兜底：全场手牌皆空时收牌不抛错（无手牌可转移，桌�
   assert.strictEqual(room.currentPlayerId, null);
 });
 
+test('P3-1 加固：补牌之前就判终局 —— holders===1 且摸牌堆非空时，不得把已出完的人「复活」', () => {
+  // 悬崖场景：只剩收牌者有牌，但摸牌堆还没空。若先补牌再判终局，
+  // 已出完的人会被补回手牌 → holders 变多 → 终局被静默跳过，且不报任何错。
+  const { room, list } = makeEndgameSeats([[MONSTER('4'), MONSTER('6')], [], []]);
+  const [p0, p1, p2] = list;
+  room.topCard = MONSTER('K');
+  room.topCount = 1;
+  room.tablePile = [MONSTER('K')];
+  room.drawPile = [MONSTER('K'), MONSTER('K'), MONSTER('K')]; // 关键：摸牌堆还有牌
+  assert.strictEqual(holdersOf(room).length, 1, '前置：只剩收牌者手里有牌');
+  const drawBefore = room.drawPile.length;
+
+  const ret = pickUp(room, p0.id);
+
+  assert.strictEqual(ret.action, 'gameOver', '补牌前必须已经终局（否则 p1/p2 会被补回手牌）');
+  assert.strictEqual(room.phase, 'settling');
+  assert.strictEqual(p0.hand.length, 0);
+  assert.strictEqual(p0.penaltyPile.length, 3, '桌面 1 张 + 手牌 2 张 = 3');
+  assert.strictEqual(p1.hand.length, 0, 'p1 不得被补牌「复活」');
+  assert.strictEqual(p2.hand.length, 0, 'p2 不得被补牌「复活」');
+  assert.strictEqual(room.drawPile.length, drawBefore, '终局判定在补牌之前 → 摸牌堆不得被消耗');
+});
+
+test('P3-2 加固：收牌者收牌后若 0 手牌，回合交给下一个有牌的人（不得原地空转）', () => {
+  // 悬崖场景：收牌者本来就没手牌（正常流程不可达）。若无条件 currentPlayerId = pid，
+  // 他会立刻再「无牌可出 → 收牌」一次，而桌面已空 → 局面完全重复、原地空转。
+  const { room, list } = makeEndgameSeats([[], [MONSTER('4')], [MONSTER('6')]]);
+  const [p0, p1] = list;
+  room.topCard = MONSTER('K');
+  room.topCount = 1;
+  room.tablePile = [MONSTER('K')];
+  room.drawPile = []; // 补不了牌 → p0 收完还是 0 手牌
+  assert.strictEqual(p0.hand.length, 0, '前置：收牌者 0 手牌');
+
+  const ret = pickUp(room, p0.id);
+
+  assert.strictEqual(ret.action, 'pickedUp', '仍有 2 人有牌 → 不终局');
+  assert.strictEqual(ret.nextPlayerId, p1.id, '回合必须交给下一个有牌的人');
+  assert.strictEqual(room.currentPlayerId, p1.id, 'currentPlayerId 不得指向 0 手牌的收牌者');
+  assert.strictEqual(room.phase, 'playing');
+  assert.strictEqual(p0.penaltyPile.length, 1, '桌面 1 张仍计入收牌者败牌');
+  assert.notStrictEqual(room.currentPlayerId, p0.id, '把回合还给 0 手牌玩家 = 原地空转');
+});
+
 test('新终局规则：终局后任何玩家都不能再出牌/收牌（不残留回合）', () => {
   const { room, list } = makeEndgameSeats([[MONSTER('4')], [MONSTER('6')]]);
   const [a, b] = list;

@@ -872,6 +872,62 @@ test('托管自动收牌触发终局：定时器路径也必须下发 gameEnd（
   }
 });
 
+test('结算期 rejoin：重连必须拿到带 lastResult 的 settling 状态，且不再派回合', (t) => {
+  const h = makeHarness();
+  t.after(() => h.dispose());
+  const { host, others, room } = startThree(h);
+  const bSock = others[0];
+  const bPid = bSock.playerId;
+  const bToken = bSock.last('roomJoined').rejoinToken;
+  const cur = playerOf(room, host);
+
+  // 残局：开轮 + 其他人无牌 + 当前玩家 2 张 → 出一张即终局
+  room.topCard = null;
+  room.topCount = 1;
+  room.tablePile = [];
+  room.drawPile = [];
+  for (const p of room.players) {
+    p.hand = [];
+    p.penaltyPile = [];
+  }
+  cur.hand = [MONSTER('4'), MONSTER('6')];
+  room.currentPlayerId = cur.id;
+
+  // 终局前一刻 B 掉线
+  bSock.send('disconnect');
+  const bPlayer = room.players.find((p) => p.id === bPid);
+  assert.strictEqual(bPlayer.connected, false, '前置：B 已掉线');
+
+  [host, ...others].forEach((s) => s.clear());
+  const playedId = cur.hand[0].id;
+  host.send('playCard', { cardIds: [playedId] });
+  assert.strictEqual(room.phase, 'settling', '有人掉线不得阻止终局');
+  assert.strictEqual(bSock.last('gameEnd'), undefined, '离线玩家收不到 gameEnd（没有 socket 可送达）');
+
+  // 结算期重连：前端结算面板就是靠 roomJoined.state.lastResult 弹出来的
+  const b2 = h.connect('s-b-rejoin');
+  b2.send('rejoin', { roomCode: room.roomCode, playerId: bPid, rejoinToken: bToken });
+  const joined = b2.last('roomJoined');
+  assert.ok(joined, '结算期重连应成功');
+  assert.strictEqual(joined.state.phase, 'settling', '重连拿到的 state 必须是 settling（否则前端只能看空桌面）');
+  assert.ok(
+    joined.state.lastResult && joined.state.lastResult.winnerId,
+    '重连 state 必须带 lastResult，否则结算面板弹不出来'
+  );
+  assert.strictEqual(b2.all('yourTurn').length, 0, '结算期重连不得再派回合');
+  const row = joined.state.lastResult.results.find((r) => r.id === bPid);
+  assert.ok(row && typeof row.penaltyCount === 'number', '结算结果里必须有该玩家的 penaltyCount');
+  // 注：net 层在 settling 期 rejoin **不补发 gameEnd**（只有 roomJoined + state 广播）。
+  // 这是当前设计而非缺陷 —— 前端就是靠 roomJoined.state.lastResult 弹结算面板
+  // （public/app.js 的 gameEnd 处理器与 rejoin 恢复路径读的是同一份 lastResult）。
+  // 所以这里不写「必须补发 gameEnd」的断言，改为钉住「state.lastResult 必须自足」。
+  assert.deepStrictEqual(
+    joined.state.lastResult.results.map((r) => r.id).sort(),
+    room.players.map((p) => p.id).sort(),
+    'state.lastResult.results 必须覆盖全员（前端只靠它还原结算面板，缺人就少显示一行）'
+  );
+});
+
 test('兜底：全场手牌皆空时收牌 → holders=0 兜底结算，协议层同样下发 gameEnd', (t) => {
   const h = makeHarness();
   t.after(() => h.dispose());
