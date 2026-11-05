@@ -72,6 +72,24 @@
         <div id="seats"></div>
         <div id="table">
           <div id="topCard" class="top-card"></div>
+          <!-- 出牌方向环：一圈虚线椭圆轨道 + 一颗沿轨道空转的箭头（顺时针/逆时针）。
+               方向信息由 #iDir 的文字承担，这层是纯视觉，所以 aria-hidden。
+               环 pointer-events:none 且 z-index 在门槛牌之下（-1，只压过 #table 自己的底色），
+               绝不吃点击、也不会糊住牌面与日志。方向由 app.js 按 st.direction 挂 ccw 类。 -->
+          <div id="dirRing" class="dir-ring" aria-hidden="true">
+            <div class="dir-disc">
+              <!-- viewBox 120×120 + preserveAspectRatio=none：圆在页面上被拉成椭圆，
+                   正好扣住 5:7 的牌形；轨道底部留 100° 缺口，永远避开下方文字行。 -->
+              <svg class="dir-track" viewBox="0 0 120 120" preserveAspectRatio="none" focusable="false">
+                <path class="dir-arc" d="M 26.6 99.8 A 52 52 0 1 1 93.4 99.8" />
+                <g class="dir-orbit">
+                  <!-- 三角形中心正好落在轨道半径上（y=8 即 60-52），否则箭头会飘在环内侧 -->
+                  <polygon class="dir-arrow" points="54,3.5 54,12.5 63,8" />
+                </g>
+              </svg>
+              <span class="dir-flag">反转</span>
+            </div>
+          </div>
           <!-- 压制冲击动画层：只放纯装饰节点（残影/冲击波/斩击线/火星），
                aria-hidden 保证读屏器忽略；position:absolute 不参与 #table 的 flex 布局。
                节点全部由 app.js 动态创建并在动画结束后自行移除，这里保持空壳。 -->

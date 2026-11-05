@@ -295,6 +295,7 @@ function renderGame() {
   if (!st || !st.players || st.players.length === 0) return;
   const prev = S.snap;
   renderInfo(st);
+  renderDirRing(st);
   renderSeats(st);
   renderTable(st);
   renderHand(st);
@@ -320,6 +321,9 @@ function snapshot(st) {
     // 门槛牌本体的只读副本：只给「压制残影」画点数/花色用（topKey 是判据，不是牌面）。
     // 纯新增字段，不改上面四个字段的语义；判据永远只认 topKey。
     topCard: st.topCard ? { rank: st.topCard.rank, suit: st.topCard.suit, kind: st.topCard.kind } : null,
+    // 出牌方向（1 顺时针 / -1 逆时针）：只给「方向环反转」做帧对比用。
+    // 归一化成 ±1，免得收到 undefined 时把 0 当真值去比。
+    direction: st.direction === -1 ? -1 : 1,
   };
 }
 
@@ -375,6 +379,11 @@ function applyFeel(prev, st) {
 
   // 4) 压制 / 连击的冲击动画（首出刻意不进来：只有落牌，见上面三档说明）
   if (overplay) hitFx(prev.topCard, delta);
+
+  // 5) 反转（打出 2·反转）：方向真的翻了才播一次。
+  //    判据同样是帧对比 —— 同一份 direction 重复到达绝不重播；
+  //    减弱动效时连类名都不挂（环不动，但箭头仍钉在环上指示方向）。
+  if (prev.direction !== stDir(st) && motionOk()) pulseClass('#dirRing', 'flip', DIR_FLIP_MS);
 }
 
 /** 手牌上方的单行摘要：把「几张牌 / 败了几张」从座位的小字里解放出来 */
@@ -391,6 +400,20 @@ function renderInfo(st) {
   $('#iRound').textContent = `第 ${st.roundNumber || 1} 局`;
   $('#iDraw').textContent = `摸牌堆 ${st.drawPileCount}`;
   $('#iDir').textContent = st.direction === 1 ? '方向 ↻ 顺时针' : '方向 ↺ 逆时针';
+}
+
+/**
+ * 方向环：环的形状不变，靠**空转方向**一直在说话（顺时针慢转 / 逆时针慢转）。
+ * 状态严格来自 st.direction —— 不能靠「谁打了 2」这类事件推断：
+ * 重连、服务端重播、接力接管都会重发同一份 state，事件推断会重复翻转方向。
+ *
+ * 只在方向真的变了的时候才切类名：classList.toggle(…, force) 在值不变时不会改属性，
+ * 于是 9s 一圈的空转动画不会每帧被重启（重启会让环原地抖一下）。
+ */
+function renderDirRing(st) {
+  const ring = $('#dirRing');
+  if (!ring || !ring.classList) return;
+  ring.classList.toggle('ccw', st.direction === -1);
 }
 
 // 座位边缘锚点（相对 #gameArea 的 % 坐标，顺时针排列，从下中开始）
@@ -712,6 +735,14 @@ function flyGhost(node, toRect, rotate) {
  */
 const FX_MS = { ghost: 260, shock: 420, shockLag: 60, slash: 300, spark: 340 };
 
+/** 反转动画时长（环缩放闪亮 + 「反转」浮字），与 CSS 的 .46s 对齐 */
+const DIR_FLIP_MS = 460;
+
+/** 方向归一化：只有 -1 才算逆时针，其余（含 undefined）都按顺时针 */
+function stDir(st) {
+  return st && st.direction === -1 ? -1 : 1;
+}
+
 /** #fx 层；拿不到（老页面/裁剪过的 DOM）就返回 null，所有 FX 静默跳过 */
 function fxLayer() {
   const el = $('#fx');
@@ -719,19 +750,27 @@ function fxLayer() {
 }
 
 /**
- * 允许播 FX 吗？三票否决：
- *  1. 没有 createElement（测试沙箱 / 极端环境）
- *  2. 没有 #fx 层
- *  3. 用户要减弱动效（matchMedia 拿不到就当 false，不拦）
+ * 用户是否接受动效。拿不到 matchMedia（沙箱 / 隐私模式 / 老浏览器）一律当作「接受」——
+ * 宁可多播一次动画，也不要在拿不到偏好的环境里静默丢掉全部反馈。
  */
-function fxAllowed() {
-  if (typeof document === 'undefined' || typeof document.createElement !== 'function') return false;
-  if (!fxLayer()) return false;
+function motionOk() {
   try {
     if (typeof window !== 'undefined' && typeof window.matchMedia === 'function'
       && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return false;
   } catch (e) { /* matchMedia 在隐私模式/老浏览器可能抛错 → 当作「没有偏好」 */ }
   return true;
+}
+
+/**
+ * 允许播 FX 吗？三票否决：
+ *  1. 没有 createElement（测试沙箱 / 极端环境）
+ *  2. 没有 #fx 层
+ *  3. 用户要减弱动效
+ */
+function fxAllowed() {
+  if (typeof document === 'undefined' || typeof document.createElement !== 'function') return false;
+  if (!fxLayer()) return false;
+  return motionOk();
 }
 
 /** 造一个带 class 的 div（classList.add 而不是 className：假 DOM 只有 classList） */
@@ -763,6 +802,20 @@ function spawnFx(node, ms) {
 function flashClass(sel, cls, ms) {
   const el = $(sel);
   if (!el || !el.classList) return;
+  el.classList.add(cls);
+  setTimeout(() => el.classList.remove(cls), ms);
+}
+
+/**
+ * 可重复触发的类名特效：先摘 → 强制重排 → 再加。
+ * flashClass 只加不摘，同一个动画在 600ms 内被打断第二次时浏览器会当作「无变化」而不重播；
+ * 方向环的反转必须每次都能从头播（连续两张 2·反转 也要看得到），所以单独用这个。
+ */
+function pulseClass(sel, cls, ms) {
+  const el = $(sel);
+  if (!el || !el.classList) return;
+  el.classList.remove(cls);
+  if (el.offsetWidth) void el.offsetWidth; // 重排，让同名动画可重播（假 DOM 没有 offsetWidth）
   el.classList.add(cls);
   setTimeout(() => el.classList.remove(cls), ms);
 }

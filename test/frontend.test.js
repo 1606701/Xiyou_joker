@@ -148,7 +148,7 @@ function makeRig(opts = {}) {
     if (!els.has(sel)) els.set(sel, makeEl(sel));
     return els.get(sel);
   };
-  for (const id of ['view-home', 'view-room', 'view-game', 'view-settle', 'roomInfo', 'toast', 'nickname', 'fx']) {
+  for (const id of ['view-home', 'view-room', 'view-game', 'view-settle', 'roomInfo', 'toast', 'nickname', 'fx', 'dirRing']) {
     getEl(`#${id}`);
   }
   // 与 public/index.html 的初始 class 对齐：两个 AI 按钮出厂就是 hidden（`.btn.hidden`）。
@@ -474,8 +474,8 @@ test('点击「加 AI」「踢 AI」→ 分别 emit addAI / removeAI（事件名
  * ============================================================ */
 
 /** 对局中某一帧：门槛牌 + 桌面牌数 */
-function stPlay(topCard, pile) {
-  return stBase('playing', { topCard, tablePileCount: pile });
+function stPlay(topCard, pile, extra = {}) {
+  return stBase('playing', { topCard, tablePileCount: pile, ...extra });
 }
 
 const C4 = { rank: '4', suit: '♠', kind: 'monster' };
@@ -690,4 +690,112 @@ test('★事件日志：max-height 必须与 box-sizing: content-box 成对出�
   assert.ok(/max-height\s*:/.test(block[0]), '.event-log 应保留 max-height 作为条数护栏');
   assert.ok(/box-sizing\s*:\s*content-box/.test(block[0]),
     '.event-log 设了 max-height 却没改回 content-box —— 第二行会被切掉一半（真机复现过）');
+});
+
+/* ============================================================
+ * 出牌方向环（#dirRing · W3-ENG-FX02）
+ *
+ * 环的价值全在「一直在说话」+「反转那一下」两件事上，所以断言只钉这两条：
+ *   1. 方向类名严格跟着 st.direction（不是靠「谁打了 2」推断）
+ *   2. 只有方向真的变了才播一次，重复 state 不重播
+ * 外加两条静态护栏：环真的在 index.html 里、层级低于日志且不吃点击。
+ * ============================================================ */
+
+/** 静态读 style.css 里某个选择器的规则块（先剥注释，否则块内注释里的 } 会截断匹配） */
+function cssRule(sel) {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'public', 'style.css'), 'utf8');
+  const bare = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const esc = sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = bare.match(new RegExp(`${esc}\\s*\\{[^}]*\\}`));
+  return m ? m[0] : null;
+}
+
+/** 从规则块里取一个整数值（取不到返回 NaN，让断言能明确报出来） */
+function cssInt(block, prop) {
+  const m = block && block.match(new RegExp(`${prop}\\s*:\\s*(-?\\d+)`));
+  return m ? Number(m[1]) : NaN;
+}
+
+/* ================= 场景 21：方向类名严格跟着 st.direction ================= */
+test('★方向环：进入对局即按 st.direction 挂方向类（1 顺时针 / -1 逆时针）', () => {
+  // 静态：环必须真的写在页面结构里。假 DOM 的 querySelector 会自动补元素，
+  // 光断言「拿得到 #dirRing」证明不了任何事。
+  const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+  assert.ok(/id="dirRing"/.test(html), 'index.html 里必须有 #dirRing');
+  assert.ok(/class="dir-ring"/.test(html), '#dirRing 要带 .dir-ring');
+
+  const r = makeRig();
+  r.socket.fire('roomJoined', { roomCode: '888', youId: 'p0', rejoinToken: 'tk', state: stBase('playing', { direction: 1 }) });
+  assert.ok(!r.getEl('#dirRing').classList.contains('ccw'), 'direction=1 不应挂 ccw');
+
+  r.socket.fire('state', stBase('playing', { direction: -1 }));
+  assert.ok(r.getEl('#dirRing').classList.contains('ccw'), 'direction=-1 必须挂 ccw（否则环会朝反方向空转）');
+
+  r.socket.fire('state', stBase('playing', { direction: 1 }));
+  assert.ok(!r.getEl('#dirRing').classList.contains('ccw'), '再转回顺时针时要把 ccw 摘掉');
+});
+
+/* ================= 场景 22：★反转只播一次，且能连着播 ================= */
+test('★direction 变化播一次反转动画；同一份 direction 重复到达绝不重播', () => {
+  const r = makeRig({ timers: true });
+  r.socket.fire('roomJoined', { roomCode: '888', youId: 'p0', rejoinToken: 'tk', state: stBase('playing', { direction: 1 }) });
+  assert.ok(!r.getEl('#dirRing').classList.contains('flip'), '入场帧（prev 为空）不该播反转');
+
+  // 监听 classList 的增删：CSS 动画要「从头播」必须先把类名摘掉再重排再加，
+  // 只 add 不 remove 的话，浏览器会把第二次当成「无变化」，动画不重播（真机上看就是第二张
+  // 2·反转 什么也没发生）。假 DOM 里没有动画引擎，只能盯住这个「先摘后加」的约定。
+  const ring = r.getEl('#dirRing');
+  const seq = [];
+  const rawRemove = ring.classList.remove;
+  const rawAdd = ring.classList.add;
+  ring.classList.remove = (c) => { if (c === 'flip') seq.push('remove'); return rawRemove(c); };
+  ring.classList.add = (c) => { if (c === 'flip') seq.push('add'); return rawAdd(c); };
+
+  r.socket.fire('state', stBase('playing', { direction: -1 }));
+  assert.ok(ring.classList.contains('flip'), '1 → -1 必须播一次反转动画');
+  assert.deepStrictEqual(seq, ['remove', 'add'], '首次反转应是「先摘后加」各一次');
+
+  // 等动画播完、类名被摘掉，再让同一份 direction 重发一遍
+  r.timers.advance(600);
+  assert.ok(!ring.classList.contains('flip'), '前置：460ms 后 flip 应已被摘掉');
+  const seqAfterTimer = seq.slice(); // 定时器摘类名会多一个 remove，连同它一起记下来
+
+  r.socket.fire('state', stBase('playing', { direction: -1 }));
+  assert.ok(!ring.classList.contains('flip'), '方向没变（重连/重播/接管）就绝不重复播');
+  assert.deepStrictEqual(seq, seqAfterTimer, '重复 state 不得再动 flip 一次');
+
+  // 真·第二次反转：必须重新走一遍「先摘后加」，动画才能从头播
+  r.socket.fire('state', stBase('playing', { direction: 1 }));
+  assert.ok(ring.classList.contains('flip'), '连续第二次反转也要看得见（不能只播第一次）');
+  assert.deepStrictEqual(seq.slice(-2), ['remove', 'add'],
+    '第二次反转必须先把 flip 摘掉再加（否则浏览器不会重播同名动画）');
+});
+
+/* ================= 场景 23：★减弱动效 —— 不动但仍有方向 ================= */
+test('★减弱动效：环不播反转、不建冲击节点，但方向类名照样正确', () => {
+  const r = makeRig({ reducedMotion: true });
+  r.socket.fire('roomJoined', { roomCode: '888', youId: 'p0', rejoinToken: 'tk', state: stPlay(C4, 1) });
+
+  r.socket.fire('state', stPlay(C6, 2, { direction: -1 }));
+  assert.ok(!r.getEl('#dirRing').classList.contains('flip'), '减弱动效时不得挂反转动画标记');
+  assert.ok(r.getEl('#dirRing').classList.contains('ccw'), '方向类名必须照挂 —— 静态箭头是唯一的方向提示');
+  assert.strictEqual(r.getEl('#fx').children.length, 0, '顺带：减弱动效下压制 FX 仍应是 0 节点');
+});
+
+/* ================= 场景 24：层级与点击穿透（静态读 CSS） ================= */
+test('★方向环层级：z-index 低于 .event-log 与 #fx，且 pointer-events: none', () => {
+  const ring = cssRule('.dir-ring');
+  assert.ok(ring, 'style.css 里找不到 .dir-ring 规则');
+
+  assert.ok(/pointer-events\s*:\s*none/.test(ring), '环必须 pointer-events:none，否则会吃掉门槛牌的点击与 hover');
+  assert.ok(/top\s*:\s*var\(--fx-card-top/.test(ring) && /height\s*:\s*var\(--fx-card-h/.test(ring),
+    '环要贴在「卡牌带」上（与 #fx 同一套变量），才能正好扣住门槛牌');
+
+  const ringZ = cssInt(ring, 'z-index');
+  const logZ = cssInt(cssRule('.event-log'), 'z-index');
+  const fxZ = cssInt(cssRule('#fx'), 'z-index');
+  assert.ok(Number.isFinite(ringZ), '.dir-ring 必须显式写 z-index（负层级是「落在牌之下」的保证）');
+  assert.ok(Number.isFinite(logZ) && Number.isFinite(fxZ), '前置：.event-log 与 #fx 都该有显式 z-index');
+  assert.ok(ringZ < logZ, `环(${ringZ}) 必须低于 .event-log(${logZ})，否则会糊住日志文字`);
+  assert.ok(ringZ < fxZ, `环(${ringZ}) 应低于冲击波层 #fx(${fxZ})，压制特效要盖在环之上`);
 });
