@@ -39,6 +39,9 @@ function makeEl(sel) {
     value: '',
     disabled: false,
     style: {},
+    // 真实 DOM 一定有 parentNode；假 DOM 补上，是让「FX 节点被清理」这条断言
+    // 能通过 children.length 观察到结果（否则节点只能加不能删，等于没法验证回收）。
+    parentNode: null,
     classList: {
       add: (c) => classes.add(c),
       remove: (c) => classes.delete(c),
@@ -56,7 +59,20 @@ function makeEl(sel) {
       // renderHand 会取 firstElementChild 并 addEventListener
       el.firstElementChild = v && v.trim().startsWith('<') ? makeEl(`${sel} > child`) : null;
     },
-    appendChild(c) { el.children.push(c); return c; },
+    appendChild(c) {
+      el.children.push(c);
+      if (c && typeof c === 'object') c.parentNode = el;
+      return c;
+    },
+    removeChild(c) {
+      const i = el.children.indexOf(c);
+      if (i >= 0) el.children.splice(i, 1);
+      if (c && typeof c === 'object') c.parentNode = null;
+      return c;
+    },
+    remove() {
+      if (el.parentNode && typeof el.parentNode.removeChild === 'function') el.parentNode.removeChild(el);
+    },
     addEventListener(evt, cb) {
       if (!handlers.has(evt)) handlers.set(evt, []);
       handlers.get(evt).push(cb);
@@ -64,6 +80,46 @@ function makeEl(sel) {
   };
   el.firstElementChild = null;
   return el;
+}
+
+/**
+ * 可手动推进的假定时器（只在 makeRig({timers:true}) 时注入）。
+ * 用途：验证 FX 的「兜底清理」——animationend 永远不触发时，靠 setTimeout 也必须回收节点。
+ * 用真实 setTimeout 的话只能靠 sleep 等，既慢又不稳定。
+ */
+function makeTimers() {
+  const q = [];
+  let seq = 1;
+  let now = 0;
+  return {
+    setTimeout(fn, ms) {
+      const id = seq++;
+      q.push({ id, at: now + Math.max(0, ms || 0), fn });
+      return id;
+    },
+    clearTimeout(id) {
+      const i = q.findIndex((t) => t.id === id);
+      if (i >= 0) q.splice(i, 1);
+    },
+    pending: () => q.length,
+    now: () => now,
+    /** 推进 ms 毫秒：到期的回调按时间顺序执行（回调里新排的定时器也在本次范围内） */
+    advance(ms) {
+      const target = now + ms;
+      for (;;) {
+        let next = null;
+        for (const t of q) {
+          if (t.at > target) continue;
+          if (!next || t.at < next.at || (t.at === next.at && t.id < next.id)) next = t;
+        }
+        if (!next) break;
+        q.splice(q.indexOf(next), 1);
+        now = next.at;
+        next.fn();
+      }
+      now = target;
+    },
+  };
 }
 
 /**
@@ -81,14 +137,18 @@ function click(el) {
  * 造一套全新的运行时环境（每个用例一套，互不干扰）。
  * 注意：故意**不提供** document.body / getBoundingClientRect / requestAnimationFrame ——
  * 动效代码必须能在没有布局能力的环境里安全跳过，这里顺带把这条约束钉住。
+ *
+ * @param {{timers?: boolean, reducedMotion?: boolean}} [opts]
+ *   timers        注入可推进的假定时器（默认用真实 setTimeout）
+ *   reducedMotion 提供 window.matchMedia，且 (prefers-reduced-motion: reduce) 命中
  */
-function makeRig() {
+function makeRig(opts = {}) {
   const els = new Map();
   const getEl = (sel) => {
     if (!els.has(sel)) els.set(sel, makeEl(sel));
     return els.get(sel);
   };
-  for (const id of ['view-home', 'view-room', 'view-game', 'view-settle', 'roomInfo', 'toast', 'nickname']) {
+  for (const id of ['view-home', 'view-room', 'view-game', 'view-settle', 'roomInfo', 'toast', 'nickname', 'fx']) {
     getEl(`#${id}`);
   }
   // 与 public/index.html 的初始 class 对齐：两个 AI 按钮出厂就是 hidden（`.btn.hidden`）。
@@ -97,6 +157,7 @@ function makeRig() {
   getEl('#btnAddAI').classList.add('hidden');
   getEl('#btnRemoveAI').classList.add('hidden');
 
+  const timers = opts.timers ? makeTimers() : null;
   const warnings = [];
   const sandbox = {
     console: {
@@ -104,7 +165,9 @@ function makeRig() {
       warn: (...a) => warnings.push(a.join(' ')),
       error: (...a) => warnings.push(`ERROR ${a.join(' ')}`),
     },
-    setTimeout, clearTimeout, Promise, Map, Set, JSON, String, Object, Array, Math, Date,
+    setTimeout: timers ? timers.setTimeout : setTimeout,
+    clearTimeout: timers ? timers.clearTimeout : clearTimeout,
+    Promise, Map, Set, JSON, String, Object, Array, Math, Date,
     location: { host: 'localhost:3311' },
     sessionStorage: (() => {
       const m = new Map();
@@ -122,6 +185,13 @@ function makeRig() {
       addEventListener: (evt, cb) => { if (evt === 'DOMContentLoaded') sandbox.__domReady = cb; },
     },
   };
+  // 只有验证「减弱动效」的用例才注入 window：默认环境没有 window，
+  // app.js 必须自己把「拿不到 matchMedia」当成「没有偏好」，否则真机上会静默丢特效。
+  if (opts.reducedMotion) {
+    sandbox.window = {
+      matchMedia: (q) => ({ media: q, matches: q === '(prefers-reduced-motion: reduce)' }),
+    };
+  }
 
   let socket = null;
   sandbox.io = () => {
@@ -149,6 +219,7 @@ function makeRig() {
     getEl,
     warnings,
     click,
+    timers,
     visible: (id) => !getEl(`#${id}`).classList.contains('hidden'),
     hidden: (id) => getEl(`#${id}`).classList.contains('hidden'),
   };
@@ -394,4 +465,154 @@ test('点击「加 AI」「踢 AI」→ 分别 emit addAI / removeAI（事件名
   assert.ok(clickedRemove, '「踢 AI」必须绑定了 click 监听');
   assert.deepStrictEqual(r.socket.emitted.map((e) => e.evt), ['addAI', 'removeAI'], '再 emit removeAI');
 });
+
+/* ============================================================
+ * 打牌压制冲击动画（FX 层 · W2-ENG-FX01）
+ *
+ * 这一组断言只做一件事：把「三档强度」和「不许重复播 / 不许漏回收」钉死。
+ * 阴性对照请把 FE_APP 指向改动前的 app.js —— 除了首出那条，其余都应变红。
+ * ============================================================ */
+
+/** 对局中某一帧：门槛牌 + 桌面牌数 */
+function stPlay(topCard, pile) {
+  return stBase('playing', { topCard, tablePileCount: pile });
+}
+
+const C4 = { rank: '4', suit: '♠', kind: 'monster' };
+const C6 = { rank: '6', suit: '♥', kind: 'monster' };
+const C9 = { rank: '9', suit: '♦', kind: 'monster' };
+const CJ = { rank: 'J', suit: '♣', kind: 'monster' };
+
+const fxCount = (r, cls) => r.getEl('#fx').children.filter((n) => n.classList.contains(cls)).length;
+const fxTotal = (r) => r.getEl('#fx').children.length;
+
+/* ================= 场景 14：★首出 vs 压制 —— 强度必须拉开 ================= */
+test('★首出只有落牌、压制才有冲击波（否则「压制」体感等于随便出张牌）', () => {
+  const r = makeRig();
+  r.socket.fire('roomJoined', { roomCode: '888', youId: 'p0', rejoinToken: 'tk', state: stPlay(null, 0) });
+  assert.strictEqual(fxTotal(r), 0, '入场帧（prev 为空）不得产生任何 FX');
+
+  // ① 首出：prev.hasTop === false
+  r.socket.fire('state', stPlay(C4, 1));
+  assert.ok(r.getEl('#topCard').classList.contains('drop'), '首出仍要有落牌动画（三档里的第 1 档）');
+  assert.strictEqual(fxTotal(r), 0, '首出不得有冲击波/斩击线/残影/火星');
+  assert.ok(!r.getEl('#table').classList.contains('hit'), '首出不震桌');
+
+  // ② 压制：prev.hasTop === true 且门槛牌换了
+  r.socket.fire('state', stPlay(C6, 2));
+  assert.strictEqual(fxCount(r, 'fx-shock'), 2, '压制应有 2 圈冲击波');
+  assert.strictEqual(fxCount(r, 'fx-slash'), 1, '压制应有 1 条斩击线');
+  assert.strictEqual(fxCount(r, 'fx-card-ghost'), 1, '压制应有旧牌残影');
+  assert.strictEqual(fxCount(r, 'fx-spark'), 0, '单张压制不溅火星（火星是连击专属）');
+  assert.ok(r.getEl('#table').classList.contains('hit'), '压制要震桌');
+  assert.ok(r.getEl('#topCard').classList.contains('flash'), '压制要给牌面高光');
+  // 残影必须画的是「被压掉的那张牌」（4），不是新压上去的那张（6）
+  const ghost = r.getEl('#fx').children.find((n) => n.classList.contains('fx-card-ghost'));
+  assert.ok(ghost && String(ghost.innerHTML).includes('4'), '残影内容应是上一帧的门槛牌（4）');
+  assert.ok(ghost && !String(ghost.innerHTML).includes('6'), '残影不得混入新牌（6）');
+});
+
+/* ================= 场景 15：连击 —— 冲击波转朱红 + 火星（有上限） ================= */
+test('连击（一次压上 ≥2 张）：冲击波转朱红 + 火星 min(delta,4)', () => {
+  const r = makeRig({ timers: true });
+  r.socket.fire('roomJoined', { roomCode: '888', youId: 'p0', rejoinToken: 'tk', state: stPlay(C4, 1) });
+
+  // 压 2 张（delta = 2）
+  r.socket.fire('state', stPlay(C9, 3));
+  assert.strictEqual(fxCount(r, 'fx-spark'), 2, '压上 2 张 → 2 颗火星');
+  const hot = r.getEl('#fx').children.filter((n) => n.classList.contains('fx-shock') && n.classList.contains('hot'));
+  assert.strictEqual(hot.length, 2, '连击的冲击波必须转朱红（.hot）');
+
+  r.timers.advance(1200); // 清场
+  assert.strictEqual(fxTotal(r), 0, '前置：上一轮 FX 已回收');
+
+  // 压 6 张（delta = 6）→ 火星封顶 4 颗，否则满屏噪点
+  r.socket.fire('state', stPlay(CJ, 9));
+  assert.strictEqual(fxCount(r, 'fx-spark'), 4, 'delta 再大也只溅 4 颗火星');
+});
+
+/* ================= 场景 16：★幂等 —— 同一份 state 重发不得重播 ================= */
+test('★同一份 state 重复到达（重连 / 重播 / 接管）不重复播冲击动画', () => {
+  const r = makeRig();
+  r.socket.fire('roomJoined', { roomCode: '888', youId: 'p0', rejoinToken: 'tk', state: stPlay(C4, 1) });
+
+  const beat = stPlay(C6, 2);
+  r.socket.fire('state', beat);
+  const afterFirst = fxTotal(r);
+  assert.ok(afterFirst > 0, '前置：第一次压制应产生节点');
+
+  r.socket.fire('state', beat);
+  r.socket.fire('state', beat);
+  assert.strictEqual(fxTotal(r), afterFirst, '同一份 state 连发两次，第二次不得新增任何 FX 节点');
+
+  // 连击帧同理（火星最容易漏成叠加噪音）
+  const combo = stPlay(C9, 5);
+  r.socket.fire('state', combo);
+  const afterCombo = fxTotal(r);
+  r.socket.fire('state', combo);
+  assert.strictEqual(fxTotal(r), afterCombo, '连击帧重发同样不得新增火星');
+});
+
+/* ================= 场景 17：功能牌 / 收牌 —— 不是压制，别放特效 ================= */
+test('门槛牌没换（功能牌 A/2）或桌面被收走时，都不触发冲击动画', () => {
+  const r = makeRig();
+  r.socket.fire('roomJoined', { roomCode: '888', youId: 'p0', rejoinToken: 'tk', state: stPlay(C4, 2) });
+
+  // 门槛牌没变却有新牌 → 功能牌（A/2），不是压制
+  r.socket.fire('state', stPlay(C4, 4));
+  assert.strictEqual(fxTotal(r), 0, '功能牌不参与压制链，不得放冲击波');
+
+  // 收牌：桌面清空
+  r.socket.fire('state', stPlay(null, 0));
+  assert.strictEqual(fxTotal(r), 0, '收牌不是压制，不得放冲击波');
+});
+
+/* ================= 场景 18：★减弱动效 —— 一个节点都不建 ================= */
+test('★prefers-reduced-motion: reduce → 不建任何 FX 节点，但落牌反馈保留', () => {
+  const r = makeRig({ reducedMotion: true });
+  r.socket.fire('roomJoined', { roomCode: '888', youId: 'p0', rejoinToken: 'tk', state: stPlay(C4, 1) });
+  r.socket.fire('state', stPlay(C9, 5)); // 压制 + 连击都占全
+
+  assert.strictEqual(fxTotal(r), 0, '减弱动效时不得创建任何 FX 节点');
+  assert.ok(!r.getEl('#table').classList.contains('hit'), '减弱动效时不震桌');
+  assert.ok(!r.getEl('#topCard').classList.contains('flash'), '减弱动效时不闪高光');
+  // 落牌动画交给 CSS 媒体查询压到 0.001ms，JS 不该连它一起拦掉
+  assert.ok(r.getEl('#topCard').classList.contains('drop'), '减弱动效不等于零反馈：落牌类名照加');
+});
+
+/* ================= 场景 19：清理主路径（animationend） ================= */
+test('FX 节点：animationend 一到就移除（主路径，防止越积越多）', () => {
+  const r = makeRig({ timers: true });
+  r.socket.fire('roomJoined', { roomCode: '888', youId: 'p0', rejoinToken: 'tk', state: stPlay(C4, 1) });
+  r.socket.fire('state', stPlay(C6, 2));
+
+  const nodes = r.getEl('#fx').children.slice();
+  assert.ok(nodes.length >= 4, `前置：压制应挂上至少 4 个节点，实际 ${nodes.length}`);
+
+  for (const n of nodes) {
+    const hs = (n.__handlers && n.__handlers.get('animationend')) || [];
+    assert.ok(hs.length > 0, '每个 FX 节点都必须自己挂 animationend 回收');
+    for (const h of hs) h({});
+  }
+  assert.strictEqual(fxTotal(r), 0, 'animationend 触发后节点必须全部移除');
+});
+
+/* ================= 场景 20：★兜底清理（animationend 永不触发） ================= */
+test('★FX 节点：拿不到 animationend（减弱动效 / 后台标签页）时，兜底定时器照样清空', () => {
+  const r = makeRig({ timers: true });
+  r.socket.fire('roomJoined', { roomCode: '888', youId: 'p0', rejoinToken: 'tk', state: stPlay(C4, 1) });
+  r.socket.fire('state', stPlay(C9, 5));
+
+  const total = fxTotal(r);
+  assert.ok(total > 0, '前置：连击应挂上节点');
+
+  // 谁也不去触发 animationend，只推进时间
+  r.timers.advance(100);
+  assert.strictEqual(fxTotal(r), total, '100ms 时动画还没播完，不该提前清（清理必须是「时长 + 200ms」而不是立刻）');
+
+  r.timers.advance(1100); // 最长一条 480ms + 200ms 兜底 << 1200ms
+  assert.strictEqual(fxTotal(r), 0, '兜底清理失效 → 后台标签页里节点会无限堆积');
+  assert.ok(!r.getEl('#table').classList.contains('hit'), '震桌类名也要在 600ms 后摘掉，否则下次不再触发');
+});
+
 

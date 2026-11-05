@@ -72,6 +72,10 @@
         <div id="seats"></div>
         <div id="table">
           <div id="topCard" class="top-card"></div>
+          <!-- 压制冲击动画层：只放纯装饰节点（残影/冲击波/斩击线/火星），
+               aria-hidden 保证读屏器忽略；position:absolute 不参与 #table 的 flex 布局。
+               节点全部由 app.js 动态创建并在动画结束后自行移除，这里保持空壳。 -->
+          <div id="fx" class="fx-layer" aria-hidden="true"></div>
           <div id="tableInfo" class="table-info"></div>
           <div id="eventLog" class="event-log"></div>
         </div>

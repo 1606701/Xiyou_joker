@@ -37,6 +37,10 @@
   --r-md: 12px;
   --r-lg: 16px;
   --tap: 44px;
+
+  /* 牌宽：唯一来源。冲击动画的「卡牌带」高度由它推出来（见 #table 的 --fx-card-h），
+     所以窄屏/矮屏只在下面的 media query 里改这一个值，牌与特效一起缩 */
+  --card-w: clamp(52px, 15vw, 62px);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -390,8 +394,24 @@ input[type="text"]::placeholder { color: var(--dim); }
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  /* 冲击动画的定位基准：一条与门槛牌完全等高的「卡牌带」。
+     上沿 = 本元素的 padding-top，高度 = 牌宽 × 7/5（与 .card 的 aspect-ratio 一致）。
+     改 padding-top 或 .card 宽高比时，这两行必须跟着改 —— 这是全文件唯一一处手写耦合。 */
+  --fx-card-top: 14px;
+  --fx-card-h: calc(var(--card-w) * 7 / 5);
 }
-.top-card { position: relative; animation: popIn .26s ease-out both; }
+/* 圆角让牌面高光（::before）与堆叠阴影（::after 的 border-radius: inherit）都跟着牌形走 */
+.top-card { position: relative; border-radius: 10px; animation: popIn .26s ease-out both; }
+/* 牌面高光用伪元素：同一元素上两条 animation 会互相覆盖，.drop 的落牌动画不能被挤掉 */
+.top-card::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+}
+.top-card.flash::before { animation: cardFlash .32s ease-out both; }
 .table-info { margin-top: 8px; font-size: 11px; color: var(--muted); }
 .event-log {
   margin-top: 8px;
@@ -405,6 +425,9 @@ input[type="text"]::placeholder { color: var(--dim); }
   /* 正好两行：11px × 1.6 × 2 = 35.2px。写死 34px 会把第二行切掉半截字形 */
   max-height: 3.2em;
   overflow: hidden;
+  /* 压在 #fx（z-index 5）之上：冲击波散开时会经过日志区，文字不能被声波糊住 */
+  position: relative;
+  z-index: 6;
 }
 /* 每条日志强制单行：长文案（收牌那类）折行会让桌面高度随文案跳动 */
 .event-log div {
@@ -432,7 +455,7 @@ input[type="text"]::placeholder { color: var(--dim); }
 /* --- 卡牌 --- */
 .card {
   position: relative;
-  width: clamp(52px, 15vw, 62px);
+  width: var(--card-w);
   aspect-ratio: 5 / 7;
   border-radius: 8px;
   background: var(--card);
@@ -716,6 +739,82 @@ input[type="text"]::placeholder { color: var(--dim); }
   will-change: transform, opacity;
 }
 
+/* ===== 压制冲击动画（#fx · 牌桌内的一条「卡牌带」） =====
+ * 定位 100% 由 CSS 决定：JS 只负责建节点、加类名，不量尺寸、不跑 rAF。
+ * #fx 覆盖门槛牌所在的那一块区域，所有 FX 元素用 grid + place-items:center 居中，
+ * 于是残影能和真牌严丝合缝地重合，冲击波也正好从牌面炸开。
+ */
+#fx {
+  /* 覆盖 .fx-layer 的 fixed 定位（id 权重高于类选择器）：
+     整窗飞牌层 #fxLayer 继续用那个类，这里只借它的 pointer-events */
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: var(--fx-card-top, 14px);
+  height: var(--fx-card-h, 87px);
+  display: grid;
+  place-items: center;
+  z-index: 5; /* 在门槛牌之上、#eventLog 之下 */
+}
+/* 所有 FX 元素叠在同一格里 → 自动同心居中，不需要任何坐标计算 */
+#fx > * { grid-area: 1 / 1; }
+
+/* ① 旧牌残影：被压掉的那张牌 */
+.fx-card-ghost {
+  pointer-events: none;
+  animation: ghostOut .26s ease-in both;
+}
+.fx-card-ghost .card {
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+}
+
+/* ② 冲击波：两圈同心圆环，第二圈晚 60ms 起步 */
+.fx-shock {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  border: 2px solid var(--gold-2);
+  box-shadow: 0 0 10px rgba(224, 180, 92, .45), inset 0 0 10px rgba(224, 180, 92, .25);
+  animation: shockOut .42s cubic-bezier(.15, .7, .3, 1) both;
+}
+.fx-shock.lag { animation-delay: 60ms; }
+/* 连击：冲击波转朱红（--k-monster 是牌类别色里的「妖」色，与金色形成压制感对比）。
+   描边用 --k-monster，外发光补一层朱红 —— 单靠深棕红在墨绿桌面上对比不够，
+   连击就会看起来和普通压制一样，强度又拉不开了。 */
+.fx-shock.hot {
+  border-color: var(--k-monster);
+  box-shadow: 0 0 14px 2px rgba(201, 86, 79, .55), inset 0 0 12px rgba(201, 86, 79, .35);
+}
+
+/* ③ 斩击线：斜向 22° 的金光条。
+   长度用牌宽推导（3 倍牌宽 ≈ 162px），而不是父层百分比 —— 百分比会按整条卡牌带算，
+   一刀横穿整个面板还漏出桌外，看着像漏光而不是斩击。 */
+.fx-slash {
+  width: calc(var(--card-w, 62px) * 3);
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--gold-2) 22%, var(--gold) 50%, var(--gold-2) 78%, transparent);
+  transform-origin: center;
+  animation: slashOut .3s ease-out both;
+}
+
+/* ⑤ 连击火星：从牌面四向迸出（用自定义属性错开方向，避免 inline style） */
+.fx-spark {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--gold-2);
+  box-shadow: 0 0 8px rgba(239, 212, 154, .9);
+  animation: sparkOut .34s ease-out both;
+}
+.fx-spark.p0 { --dx: -30px; --dy: -30px; }
+.fx-spark.p1 { --dx: 32px; --dy: -24px; }
+.fx-spark.p2 { --dx: -26px; --dy: 28px; }
+.fx-spark.p3 { --dx: 28px; --dy: 32px; }
+
+/* ④ 桌面一震：位移 3px 级，260ms。基准 transform 里的 translate(-50%,-50%) 不能丢 */
+#table.hit { animation: tableHit .26s cubic-bezier(.36, .07, .19, .97) both; }
+
 /* ===== 动画 ===== */
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes fadeUp {
@@ -768,6 +867,42 @@ input[type="text"]::placeholder { color: var(--dim); }
   40%, 60% { transform: translateX(6px); }
 }
 
+/* --- 压制冲击（#fx 层）--- */
+/* 残影：旧牌往下沉、歪一点、缩一点，然后消失 */
+@keyframes ghostOut {
+  from { opacity: .9; transform: translateY(0) rotate(0deg) scale(1); }
+  to { opacity: 0; transform: translateY(18px) rotate(-14deg) scale(.86); }
+}
+/* 冲击波：从牌面中心炸开 */
+@keyframes shockOut {
+  0% { opacity: .55; transform: scale(.4); }
+  100% { opacity: 0; transform: scale(1.9); }
+}
+/* 斩击线：0 → 满宽 180ms（占 300ms 的 60%），再淡出 120ms */
+@keyframes slashOut {
+  0% { opacity: 0; transform: rotate(-22deg) scaleX(0); }
+  60% { opacity: 1; transform: rotate(-22deg) scaleX(1); }
+  100% { opacity: 0; transform: rotate(-22deg) scaleX(1); }
+}
+/* 连击火星：四向迸出并缩小消失（方向由 --dx/--dy 给出） */
+@keyframes sparkOut {
+  0% { opacity: 1; transform: translate(0, 0) scale(.9); }
+  100% { opacity: 0; transform: translate(var(--dx, 0), var(--dy, -26px)) scale(.35); }
+}
+/* 牌面高光：金色 bloom 起落（跑在 ::before 上，不抢 .drop 的 animation） */
+@keyframes cardFlash {
+  0% { opacity: 0; box-shadow: 0 0 0 0 rgba(224, 180, 92, 0); }
+  35% { opacity: 1; box-shadow: 0 0 18px 6px rgba(224, 180, 92, .8), 0 0 0 2px rgba(239, 212, 154, .9); }
+  100% { opacity: 0; box-shadow: 0 0 24px 10px rgba(224, 180, 92, 0); }
+}
+/* 桌面一震：3px 级位移。基准的 translate(-50%,-50%) 是 #table 的居中方式，不能丢 */
+@keyframes tableHit {
+  0%, 100% { transform: translate(-50%, -50%); }
+  20% { transform: translate(calc(-50% + 3px), calc(-50% - 3px)); }
+  45% { transform: translate(calc(-50% - 3px), calc(-50% + 2px)); }
+  70% { transform: translate(calc(-50% + 2px), calc(-50% - 1px)); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: .001ms !important;
@@ -775,11 +910,16 @@ input[type="text"]::placeholder { color: var(--dim); }
     animation-iteration-count: 1 !important;
     transition-duration: .001ms !important;
   }
+  /* 冲击特效双保险：JS 侧已按 matchMedia 完全不建节点，这里防「有残留节点」。
+     用 display:none 而不是 animation:none —— 后者会把圆环定在初始态，白闪一下更糟。 */
+  .fx-card-ghost, .fx-shock, .fx-slash, .fx-spark { display: none !important; }
+  .top-card.flash::before { animation: none !important; opacity: 0 !important; }
+  #table.hit { animation: none !important; }
 }
 
 /* ===== 窄屏微调 ===== */
 @media (max-width: 380px) {
-  .card { width: 54px; }
+  :root { --card-w: 54px; }   /* 牌与冲击特效一起缩（--fx-card-h 由它推导） */
   .card .rank { font-size: 19px; }
   .hand { gap: 6px; }
   .seat { width: 74px; }
@@ -789,7 +929,7 @@ input[type="text"]::placeholder { color: var(--dim); }
 
 /* 矮屏（横屏手机 / 小窗口）压一下桌面高度，避免手牌被挤出屏幕 */
 @media (max-height: 680px) {
-  #table { padding: 10px 10px 8px; }
+  #table { padding: 10px 10px 8px; --fx-card-top: 10px; } /* 卡牌带上沿必须跟着 padding-top 走 */
   .hand { min-height: 84px; }
-  .card { width: 54px; }
+  :root { --card-w: 54px; }
 }

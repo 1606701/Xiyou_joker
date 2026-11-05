@@ -317,6 +317,9 @@ function snapshot(st) {
     hasTop: !!st.topCard,
     pile: st.tablePileCount || 0,
     pen,
+    // 门槛牌本体的只读副本：只给「压制残影」画点数/花色用（topKey 是判据，不是牌面）。
+    // 纯新增字段，不改上面四个字段的语义；判据永远只认 topKey。
+    topCard: st.topCard ? { rank: st.topCard.rank, suit: st.topCard.suit, kind: st.topCard.kind } : null,
   };
 }
 
@@ -324,6 +327,20 @@ function applyFeel(prev, st) {
   if (!prev) return;
 
   const topKey = st.topCard ? `${st.topCard.rank}|${st.topCard.suit}|${st.topCard.kind}` : '';
+
+  // 桌面牌数增量（下面出牌音与连击判定共用同一个 diff）
+  const pile = st.tablePileCount || 0;
+  const delta = pile - (prev.pile || 0);
+
+  /**
+   * 出牌三档强度 —— 判据全部来自「同一份快照的前后差异」，所以重复 state 天然幂等
+   * （重连 / 接力接管 / 服务端重播都会重发同一份 state，不能每次重放）：
+   *   ① 首出：prev 没有门槛牌 → 只有落牌（下面 1 的 .drop）+ 堆叠阴影，**没有冲击波**
+   *   ② 压制：prev 有门槛牌且真的换了牌 → 残影 / 冲击波 / 斩击线 / 震桌 + 高光
+   *   ③ 连击：压制且一次压上 ≥2 张 → 冲击波转朱红 + 溅火星
+   * 三档必须拉开强度，否则「压制」在体感上等于「随便出张牌」。
+   */
+  const overplay = !!prev.hasTop && !!topKey && topKey !== prev.topKey;
 
   // 1) 门槛牌真的换了才砸一下（不是每次广播都砸）
   if (topKey && topKey !== prev.topKey) {
@@ -338,8 +355,6 @@ function applyFeel(prev, st) {
   // 2) 桌面牌数变化 → 出牌 / 收牌。
   //    必须用 diff：重连、重绘、托管推进都会重发同一份 state，
   //    在事件回调里无条件播音会变成一串噪音。
-  const pile = st.tablePileCount || 0;
-  const delta = pile - (prev.pile || 0);
   if (delta > 0) {
     // 门槛牌没变却有新牌 → 是功能牌（A/2），不是压制
     if (prev.hasTop && topKey !== prev.topKey) sfx('beat');
@@ -357,6 +372,9 @@ function applyFeel(prev, st) {
       if (node && node.classList) node.classList.add('bump');
     }
   }
+
+  // 4) 压制 / 连击的冲击动画（首出刻意不进来：只有落牌，见上面三档说明）
+  if (overplay) hitFx(prev.topCard, delta);
 }
 
 /** 手牌上方的单行摘要：把「几张牌 / 败了几张」从座位的小字里解放出来 */
@@ -671,6 +689,111 @@ function flyGhost(node, toRect, rotate) {
       ghost.parentNode.removeChild(ghost);
     }
   }, 380);
+}
+
+/* ---------- 压制冲击动画（#fx 层 · 三档强度） ----------
+ * 挂在 #table 里的 #fx 层上，位置全部交给 CSS（grid + place-items:center），
+ * 因此**不读 getBoundingClientRect、不用 requestAnimationFrame**：
+ * 假 DOM 里刻意没有这两个 API，用了动画代码就没法降级；真浏览器也不需要，
+ * 因为门槛牌的位置是 CSS 决定的，JS 再量一次只会多出一次强制重排。
+ *
+ * 清理走双路：主路径听 animationend，兜底 setTimeout(时长 + 200ms) 强制移除。
+ * 只靠 animationend 会漏 —— prefers-reduced-motion、标签页进后台、元素被 display:none
+ * 时都不触发，节点会越积越多，最后 #fx 变成一座内存坟场。
+ */
+const FX_MS = { ghost: 260, shock: 420, shockLag: 60, slash: 300, spark: 340 };
+
+/** #fx 层；拿不到（老页面/裁剪过的 DOM）就返回 null，所有 FX 静默跳过 */
+function fxLayer() {
+  const el = $('#fx');
+  return el && typeof el.appendChild === 'function' ? el : null;
+}
+
+/**
+ * 允许播 FX 吗？三票否决：
+ *  1. 没有 createElement（测试沙箱 / 极端环境）
+ *  2. 没有 #fx 层
+ *  3. 用户要减弱动效（matchMedia 拿不到就当 false，不拦）
+ */
+function fxAllowed() {
+  if (typeof document === 'undefined' || typeof document.createElement !== 'function') return false;
+  if (!fxLayer()) return false;
+  try {
+    if (typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return false;
+  } catch (e) { /* matchMedia 在隐私模式/老浏览器可能抛错 → 当作「没有偏好」 */ }
+  return true;
+}
+
+/** 造一个带 class 的 div（classList.add 而不是 className：假 DOM 只有 classList） */
+function fxEl(...classes) {
+  const el = document.createElement('div');
+  for (const c of classes) if (c) el.classList.add(c);
+  return el;
+}
+
+/** 挂上 #fx 并登记双路清理；ms = 该节点的动画总时长 */
+function spawnFx(node, ms) {
+  const layer = fxLayer();
+  if (!layer) return null;
+  layer.appendChild(node);
+  let dead = false;
+  const kill = () => {
+    if (dead) return;
+    dead = true;
+    const p = node.parentNode;
+    if (p && typeof p.removeChild === 'function') p.removeChild(node);
+  };
+  if (typeof node.addEventListener === 'function') node.addEventListener('animationend', kill);
+  // 兜底：animationend 万一不触发，也一定在时长后回收（dead 标记让两路只生效一次）
+  setTimeout(kill, ms + 200);
+  return node;
+}
+
+/** 短命类名特效（震桌 / 牌面高光）：没有节点要回收，按时把类名摘掉即可 */
+function flashClass(sel, cls, ms) {
+  const el = $(sel);
+  if (!el || !el.classList) return;
+  el.classList.add(cls);
+  setTimeout(() => el.classList.remove(cls), ms);
+}
+
+/**
+ * 压制（②）/ 连击（③）的冲击组合。
+ * @param {{rank:string,suit:string,kind:string}|null} card 上一帧的门槛牌（残影用）
+ * @param {number} delta 桌面牌数增量；≥2 视为连击（一次压上多张）
+ */
+function hitFx(card, delta) {
+  if (!fxAllowed()) return;
+  const combo = delta >= 2;
+
+  // ① 旧牌残影：被压掉的那张往下沉、歪一点、淡出（260ms）
+  if (card) {
+    const ghost = fxEl('fx-card-ghost');
+    ghost.innerHTML = cardHtml(card); // 复用真实牌面渲染：点数/花色/角色名同源，不另写一套
+    spawnFx(ghost, FX_MS.ghost);
+  }
+
+  // ② 冲击波：两圈同心圆环，第二圈晚 60ms 起步；连击转朱红
+  for (let i = 0; i < 2; i++) {
+    spawnFx(
+      fxEl('fx-shock', combo ? 'hot' : '', i === 1 ? 'lag' : ''),
+      FX_MS.shock + (i === 1 ? FX_MS.shockLag : 0)
+    );
+  }
+
+  // ③ 斩击线：一道斜向金光，0 → 满宽 180ms，再 120ms 淡出
+  spawnFx(fxEl('fx-slash'), FX_MS.slash);
+
+  // ④ 桌面一震 + 牌面金色高光（只加类名，flashClass 负责摘）
+  flashClass('#table', 'hit', 600);
+  flashClass('#topCard', 'flash', 360);
+
+  // ⑤ 连击：溅出 min(delta, 4) 颗火星（四向散开）
+  const sparks = combo ? Math.min(delta, 4) : 0;
+  for (let i = 0; i < sparks; i++) {
+    spawnFx(fxEl('fx-spark', `p${i}`), FX_MS.spark);
+  }
 }
 
 /* ---------- 事件绑定 ---------- */
