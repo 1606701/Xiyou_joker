@@ -714,7 +714,7 @@ test('对抗 7：房间进入 settling 后，此前注册的托管定时器触�
   assert.strictEqual(room.phase, 'settling');
 });
 
-test('缺陷 P2-02：房间被移出注册表后，陈旧托管定时器仍会改写幽灵房间状态（守卫缺 rooms.has 判定）', { todo: true }, async (t) => {
+test('缺陷 P2-02：房间被移出注册表后，陈旧托管定时器仍会改写幽灵房间状态（守卫缺 rooms.has 判定）', async (t) => {
   const rig = makeRig({ turnTimeoutMs: 60, pickupDelayMs: 60 });
   t.after(() => rig.dispose());
 
@@ -879,7 +879,7 @@ test('对抗 10：连续 20 次出牌/收牌循环，定时器账本不增长（
   assert.strictEqual(afterDispose, 0, 'net.dispose() 后 net 层定时器应清零');
 });
 
-test('缺陷 P2-01：dispose 应同时清理掉线宽限定时器（否则测试/热重载场景残留）', { todo: true }, (t) => {
+test('缺陷 P2-01：dispose 应同时清理掉线宽限定时器（否则测试/热重载场景残留）', (t) => {
   const rig = makeRig({ reconnectGraceMs: 10 * 60 * 1000 });
   t.after(() => {
     try {

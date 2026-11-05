@@ -88,6 +88,13 @@ function getView(room, pid) {
 function initNet(io, rooms, timings = {}) {
   const T = { ...DEFAULT_TIMINGS, ...timings };
   const timers = new Map(); // pid -> { turn, pickup, ai }
+  /**
+   * 掉线宽限定时器（P2-01）。它挂在 socket 的 reconnect 处理里、生命周期跟「玩家」而不是
+   * 「回合」绑定，所以不能塞进 timers（那张表按 pid 存，clearPlayerTimers 会在每次轮转时清空，
+   * 宽限定时器被顺手清掉就等于「掉线不再触发回收」）。单独一张表，只为了 dispose 时能全部收掉：
+   * 不收的话，测试套件和热重载场景会残留一串 10 分钟的定时器，进程拖着不退出。
+   */
+  const graceTimers = new Set();
   const settleAt = new Map(); // roomCode -> 进入 settling 的时间戳（nextRound 防误触基准）
   const idleSince = new Map(); // roomCode -> 全员离线起始时间戳（房间 GC 基准）
 
@@ -238,6 +245,11 @@ function initNet(io, rooms, timings = {}) {
     const t = {};
     t.turn = setTimeout(() => {
       timers.delete(pid);
+      // 房间已被回收（rooms 里已经没有它）→ 丢弃。少了这一道，陈旧定时器会去改写一个
+      // 已经没人管理的幽灵房间（autoPlay 会推进手牌、broadcastState 会往一个没有成员的空房间广播），
+      // 既不报错也不生效，是最难查的一类：日志里一切正常，只是「房间删了又活过来一点」。
+      // 与 scheduleAI 里的第一道守卫同源，三个定时器回调必须一起守。
+      if (rooms.get(room.roomCode) !== room) return;
       // 房间已结束/已被回收，或轮次已不属于该玩家 → 丢弃陈旧定时器
       if (room.phase !== 'playing' || room.currentPlayerId !== pid) return;
       try {
@@ -268,6 +280,9 @@ function initNet(io, rooms, timings = {}) {
     const t = {};
     t.pickup = setTimeout(() => {
       timers.delete(pid);
+      // 房间已被回收 → 丢弃（理由同 scheduleTurn：这里少了它，pickUp 会往幽灵房间的
+      // 败牌堆里加牌，而房间对象已经不在 rooms 里，谁都看不到，也永远不回滚）。
+      if (rooms.get(room.roomCode) !== room) return;
       if (room.phase !== 'playing' || room.currentPlayerId !== pid) return;
       try {
         const res = engine.pickUp(room, pid);
@@ -718,6 +733,12 @@ function initNet(io, rooms, timings = {}) {
         }
       }, T.reconnectGraceMs);
       if (typeof graceTimer.unref === 'function') graceTimer.unref();
+      // 进表，dispose 时才收得掉；定时器自己触发后要把自己摘掉，否则长时间运行的进程里
+      // 这张表只增不减（每个掉线过的人留一个已触发的手柄）。
+      graceTimers.add(graceTimer);
+      const dropGrace = () => graceTimers.delete(graceTimer);
+      if (typeof graceTimer.on === 'function') graceTimer.on('close', dropGrace);
+      else graceTimer[Symbol.dispose] = dropGrace;
       return player;
     }
 
@@ -738,6 +759,11 @@ function initNet(io, rooms, timings = {}) {
   function dispose() {
     clearInterval(gcTimer);
     for (const pid of [...timers.keys()]) clearPlayerTimers(pid);
+    // 掉线宽限定时器也要一起清（P2-01）：它不在 timers 里，上面那行清不到它。
+    // 不清的后果不是功能错，而是「进程不退出 / 测试套件残留」—— 表现是跑完测试要卡十秒以上，
+    // 或者热重载后旧实例还在后台等宽限期到期，然后去动一个已经不属于它的房间。
+    for (const t of graceTimers) clearTimeout(t);
+    graceTimers.clear();
   }
 
   return { getView, broadcastState, clearPlayerTimers, dispose };
