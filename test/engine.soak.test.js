@@ -48,7 +48,13 @@ const DECK_SIZE = buildDeck().length; // 54
  *    这个上界都要**重新推导**，不是调大常数的事。完整论证见文件末尾「终止性」用例。
  */
 const MAX_ACTIONS_PER_ROUND = DECK_SIZE * 2;
-/** 每轮步数上限：超过即视为死循环 */
+/**
+ * 每轮步数上限：超过即视为死循环。
+ *
+ * ⚠ 一个常数、两个职责：它既是「终止性解析上界」的判据，又是主 soak 的**死循环哨兵阈值**。
+ * 也就是说主 soak 里没有第二道安全网 —— 单独调大这个值，等于同时放松了「上界断言」和
+ * 「死循环检测」。要动它请先重读上面那段推导，而不是因为它红了就加数字。
+ */
 const MAX_STEPS_PER_GAME = MAX_ACTIONS_PER_ROUND;
 /** 每局打几轮（>1 时覆盖 nextRound → startGame 的二次开局路径） */
 const ROUNDS_PER_GAME = 2;
@@ -279,8 +285,19 @@ const ENDGAME_GAMES = Number(process.env.SOAK_ENDGAME_GAMES || 30);
  * - `first`：现行行为，取首个合法组合（≈ 最小可压），收牌次数少；
  * - `strong`：按 engine.DISPLAY_ORDER **反向**取（打最强），专门逼出收牌，
  *   压的是「收牌 ≤ 出牌 + 1」那条腿（QA 的 6000 轮压测中全局最大 79 步就出现在这条策略上）。
- * 说明：DISPLAY_ORDER 本身就是牌力序（4<6<7<9<J<Q<K<SJ<BJ<3<8<5<10<A<2），
- * 所以这里不再另写一张牌力表 —— 那种映射表最容易随规则漂移。
+ *
+ * **为什么「反向 DISPLAY_ORDER」可以当「打最强」用**（后来人最容易怀疑的一步）：
+ * 1) DISPLAY_ORDER 的顺序 `4<6<7<9<J<Q<K<SJ<BJ<3<8<5<10<A<2` 在**同一 kind 内部**与
+ *    lib/cards.js 的牌力序**逐位相同**：妖怪用 MONSTER_ORDER、师兄弟用 DISCIPLE_ORDER、
+ *    唐僧只有一张 10 —— 也就是说「同 kind 内反向取序数最大者」＝ 取能压住同 kind 最多牌的牌，
+ *    这一半是严格成立的。
+ * 2) 跨 kind 不存在「最强」：克制链是环（妖怪 → 唐僧 → 师兄弟 → 妖怪，见 BEAT），
+ *    环上没有全序，所以任何单一排序都只能近似。DISPLAY_ORDER 在跨 kind 时按「稀有度」排
+ *    （妖怪 < 师兄弟 < 唐僧 < 功能牌），反向即「先甩唐僧/师兄弟、留功能牌」，
+ *    对「逼对手收牌」这个**目标**是有效的近似，但它不是、也不可能是理论最优。
+ * 3) 所以这条 arm 的价值来自**实测**而不是定理：同 seed 下它把最大收牌从 14/17 顶到 27，
+ *    正好压到「收牌 ≤ 出牌+1」那条腿上。别把它当「最优策略」写进文档。
+ * （不再另写一张牌力表：那种映射表最容易随规则漂移，而 DISPLAY_ORDER 已够用。）
  */
 const ENDGAME_ARMS = [
   { label: 'first', seed: SEED, strategy: 'first' },

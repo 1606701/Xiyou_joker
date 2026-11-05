@@ -533,7 +533,10 @@ test('新终局规则：2 人局 A 出完立即终局，B 从未出过的手牌�
   );
 });
 
-test('新终局规则：收牌补牌后只剩收牌者有牌 → 也立刻终局（判定不能只加在 playCard）', () => {
+// 名字如实反映落点（W3 加固后）：这个局面命中 pickUp 里的 **1-a（补牌之前那次判定）**，
+// 不是补牌之后那次。原来叫「收牌补牌后只剩收牌者有牌 → 也立刻终局」是测试名漂移 ——
+// 1-b（补牌后判定）在逻辑上不可达（补牌只加不减），没有用例能覆盖它，也不该假装覆盖。
+test('新终局规则：收牌路径也要判终局 —— 只剩收牌者有牌 → 补牌之前即终局（1-a）', () => {
   const { room, list } = makeEndgameSeats([[MONSTER('4'), MONSTER('6')], [], []]);
   const [p0] = list;
   room.topCard = MONSTER('7');
@@ -547,7 +550,7 @@ test('新终局规则：收牌补牌后只剩收牌者有牌 → 也立刻终局
   assert.strictEqual(ret.action, 'gameOver', 'pickUp 之后也必须做同一判定');
   assert.strictEqual(room.phase, 'settling');
   assert.strictEqual(p0.hand.length, 0);
-  assert.strictEqual(p0.penaltyPile.length, 3, '桌面 1 张 + 手牌 2 张 = 3');
+  assert.strictEqual(p0.penaltyPile.length, 3, '桌面 1 张 + 手牌 2 张 = 3（1-a 在桌面转移之后）');
   assert.strictEqual(room.currentPlayerId, null);
 });
 
