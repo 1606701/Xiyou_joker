@@ -783,6 +783,95 @@ test('收牌触发终局（余牌计入败牌）：pickUp → gameOver 必须下
   }
 });
 
+test('出牌触发终局：playCard → gameOver 同样必须下发 gameEnd（两条终局路径各钉一颗）', (t) => {
+  const h = makeHarness();
+  t.after(() => h.dispose());
+  const { host, others, room } = startThree(h);
+  const cur = playerOf(room, host);
+
+  // 残局：其他人都已出完，只剩当前玩家手里 2 张；桌面清空（开轮，任意牌都能出）
+  for (const p of room.players) {
+    p.hand = [];
+    p.penaltyPile = [];
+  }
+  room.topCard = null;
+  room.topCount = 1;
+  room.tablePile = [];
+  room.drawPile = [];
+  cur.hand = [MONSTER('4'), MONSTER('6')];
+  room.currentPlayerId = cur.id;
+  const playedId = cur.hand[0].id;
+
+  host.clear();
+  others.forEach((s) => s.clear());
+  host.send('playCard', { cardIds: [playedId] });
+
+  // 引擎侧：出完这张后只剩自己一人有牌 → 立刻终局，剩下那张计入败牌
+  assert.deepStrictEqual(host.all('error'), [], '出牌触发终局不应产生错误提示');
+  assert.strictEqual(room.phase, 'settling', '出完后只剩自己一人有牌 → 必须终局');
+  assert.strictEqual(room.currentPlayerId, null, '终局后不得残留回合');
+  assert.strictEqual(cur.hand.length, 0, '剩下的 1 张手牌必须腾空');
+  assert.strictEqual(cur.penaltyPile.length, 1, '余牌 1 张应计入败牌堆');
+
+  // 协议侧
+  const ge = host.last('gameEnd');
+  assert.ok(ge, '出牌触发的终局也必须下发 gameEnd（否则客户端停在牌桌上）');
+  assert.deepStrictEqual(ge.winnerIds, [room.lastResult.winnerId], 'gameEnd.winnerIds 必须与 lastResult.winnerId 一致');
+  assert.strictEqual(
+    ge.results.find((r) => r.id === cur.id).penaltyCount,
+    1,
+    'gameEnd 的 penaltyCount 必须已含并入的余牌'
+  );
+  for (const s of [host, ...others]) {
+    assert.ok(s.last('gameEnd'), `${s.id} 也必须收到 gameEnd`);
+    assert.strictEqual(s.last('yourTurn'), undefined, '终局后不得再给任何人下发 yourTurn');
+  }
+});
+
+test('托管自动收牌触发终局：定时器路径也必须下发 gameEnd（无人值守玩家不得把整桌卡在牌桌上）', async (t) => {
+  const h = makeHarness({ pickupDelayMs: 40 });
+  t.after(() => h.dispose());
+  const { host, others, room } = startThree(h);
+  const a = playerOf(room, host);
+  const b = playerOf(room, others[0]);
+  const c = playerOf(room, others[1]);
+
+  // 残局：桌面门槛 4、摸牌堆空。C 出 6 把回合交给 A，A 手里只有 4（压不住 6、无功能牌）
+  // → net 层判定 A 无合法动作，给他排「快速自动收牌」定时器（schedulePickup）。
+  const top = MONSTER('4');
+  a.hand = [MONSTER('4')];
+  b.hand = [];
+  c.hand = [MONSTER('6'), MONSTER('9')];
+  room.topCard = top;
+  room.topCount = 1;
+  room.tablePile = [top];
+  room.drawPile = [];
+  for (const p of room.players) p.penaltyPile = [];
+  room.currentPlayerId = c.id;
+
+  [host, ...others].forEach((s) => s.clear());
+  const sixId = c.hand[0].id;
+  others[1].send('playCard', { cardIds: [sixId] });
+  assert.strictEqual(room.currentPlayerId, a.id, '前置：回合应交给 A');
+  assert.strictEqual(engine.computeLegalMoves(room, a.id).beats.length, 0, '前置：A 无牌可压');
+
+  // C 手里那张 9 在定时器触发前因「带牌掉线并被移出房间」而消失 → A 收牌后成为唯一有牌的人。
+  // 这一步是白盒构造：真实触发条件是 removePlayer 带走了一个还有手牌的座位，概率低但存在；
+  // 这里只为把 net 层「定时器收牌 → gameOver → gameEnd」这条分支钉进回归线。
+  c.hand = [];
+
+  await waitFor(() => room.phase === 'settling', { label: '自动收牌应把对局推进到 settling' });
+  assert.strictEqual(room.currentPlayerId, null, '终局后不得残留回合');
+  assert.strictEqual(a.hand.length, 0, 'A 的余牌必须计入败牌');
+
+  const ge = host.last('gameEnd');
+  assert.ok(ge, '定时器自动收牌触发的终局也必须下发 gameEnd（否则客户端停在牌桌上）');
+  assert.deepStrictEqual(ge.winnerIds, [room.lastResult.winnerId], 'gameEnd.winnerIds 必须与 lastResult.winnerId 一致');
+  for (const s of [host, ...others]) {
+    assert.ok(s.last('gameEnd'), `${s.id} 也必须收到 gameEnd`);
+  }
+});
+
 test('兜底：全场手牌皆空时收牌 → holders=0 兜底结算，协议层同样下发 gameEnd', (t) => {
   const h = makeHarness();
   t.after(() => h.dispose());
