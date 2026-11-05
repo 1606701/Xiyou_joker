@@ -142,6 +142,7 @@ function connectSocket() {
         results: state.lastResult.results,
         winnerIds: [state.lastResult.winnerId],
         winnerName: (winner && winner.name) || '', // 取不到就给空串，避免 escapeHtml(undefined) 显示 "undefined"
+        drawPileRemainder: state.lastResult.drawPileRemainder,
       });
     }
   });
@@ -651,6 +652,21 @@ function showSettle(data) {
     list.appendChild(li);
   });
   $('#winnerBanner').textContent = `${(data && data.winnerName) || ''} 通杀`;
+  // 终局账目闭合：桌面遗留已并入最后持有者（engine.closeOutLastHolder），
+  // 所以「全场败牌合计 + 未发 = 54」严格成立。拿不到字段就静默不显示，
+  // 比显示一行 "undefined 张" 好 —— 那是给重连旧版本 state 留的兼容口。
+  const foot = $('#settleFoot');
+  if (foot) {
+    const remain = data && typeof data.drawPileRemainder === 'number' ? data.drawPileRemainder : null;
+    if (remain !== null) {
+      const total = results.reduce((s, r) => s + (r.penaltyCount || 0), 0);
+      foot.textContent = remain > 0
+        ? `全场败牌合计 ${total} 张，另有 ${remain} 张未发（不参与对局，不计任何人）｜ ${total} + ${remain} = 54`
+        : `全场败牌合计 ${total} 张 = 54，整副牌全部打完`;
+    } else {
+      foot.textContent = '';
+    }
+  }
   $('#view-settle').classList.remove('hidden');
 }
 

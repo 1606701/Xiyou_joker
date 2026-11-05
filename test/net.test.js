@@ -811,7 +811,8 @@ test('出牌触发终局：playCard → gameOver 同样必须下发 gameEnd（�
   assert.strictEqual(room.phase, 'settling', '出完后只剩自己一人有牌 → 必须终局');
   assert.strictEqual(room.currentPlayerId, null, '终局后不得残留回合');
   assert.strictEqual(cur.hand.length, 0, '剩下的 1 张手牌必须腾空');
-  assert.strictEqual(cur.penaltyPile.length, 1, '余牌 1 张应计入败牌堆');
+  // 桌面遗留归最后持有者：刚打出的那张 + 手里剩的 1 张
+  assert.strictEqual(cur.penaltyPile.length, 2, '余牌 1 张 + 桌面遗留 1 张应一并计入败牌堆');
 
   // 协议侧
   const ge = host.last('gameEnd');
@@ -819,9 +820,14 @@ test('出牌触发终局：playCard → gameOver 同样必须下发 gameEnd（�
   assert.deepStrictEqual(ge.winnerIds, [room.lastResult.winnerId], 'gameEnd.winnerIds 必须与 lastResult.winnerId 一致');
   assert.strictEqual(
     ge.results.find((r) => r.id === cur.id).penaltyCount,
-    1,
-    'gameEnd 的 penaltyCount 必须已含并入的余牌'
+    2,
+    'gameEnd 的 penaltyCount 必须已含并入的余牌 + 桌面遗留'
   );
+  // 先断言类型再断言相等：undefined === undefined 也是真，只判相等的话这个字段丢了也照样绿
+  assert.strictEqual(typeof ge.drawPileRemainder, 'number',
+    'gameEnd 必须带 drawPileRemainder 数字字段（结算面板靠它闭合「败牌合计 + 未发 = 54」这笔账）');
+  assert.strictEqual(ge.drawPileRemainder, room.lastResult.drawPileRemainder,
+    'gameEnd 的 drawPileRemainder 必须与引擎 lastResult 一致');
   for (const s of [host, ...others]) {
     assert.ok(s.last('gameEnd'), `${s.id} 也必须收到 gameEnd`);
     assert.strictEqual(s.last('yourTurn'), undefined, '终局后不得再给任何人下发 yourTurn');

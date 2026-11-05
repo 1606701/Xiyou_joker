@@ -120,6 +120,9 @@
       <div class="panel settle-panel">
         <div class="winner-banner" id="winnerBanner"></div>
         <ul id="resultList" class="result-list"></ul>
+        <!-- 终局账目闭合说明：「全场败牌合计 X 张 + 未发 N 张 = 54」。
+             不加这行，玩家看到的败牌总和永远小于 54，却不知道差的那几张去了哪。 -->
+        <p id="settleFoot" class="settle-foot"></p>
         <p class="hint">下一局由通杀者先出牌</p>
         <button id="btnNextRound" class="btn primary">再来一局</button>
       </div>

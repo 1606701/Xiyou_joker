@@ -494,7 +494,8 @@ function forceSettle(ctx) {
   sock.fire('playCard', { cardIds: [cur.hand[0].id] });
   assert.strictEqual(room.phase, 'settling', '前置条件：应进入结算');
   assert.strictEqual(cur.hand.length, 0, '前置条件：剩余手牌应已全部计入败牌');
-  assert.strictEqual(cur.penaltyPile.length, 1, '前置条件：剩的 1 张进了败牌堆');
+  // 桌面遗留归最后持有者（终局口径，产品决定）：刚打出落桌的 1 张 + 手里剩的 1 张 = 2
+  assert.strictEqual(cur.penaltyPile.length, 2, '前置条件：余牌 1 + 桌面遗留 1 = 2 张进了败牌堆');
   return { bombedAt: Date.now() };
 }
 

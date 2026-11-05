@@ -500,13 +500,15 @@ test('新终局规则：3 人局 A 出完不终局；B 出完（只剩 C 有牌�
   assert.strictEqual(r2.action, 'gameOver', 'B 出完 → 只剩 C 有牌 → 立即终局');
   assert.strictEqual(room.phase, 'settling');
   assert.strictEqual(c.hand.length, 0, 'C 剩余手牌必须被转出');
-  assert.strictEqual(c.penaltyPile.length, 2, '转移数量 === 转移前手牌数（2 张）');
+  // 桌面遗留归最后持有者（产品口径）：C 手牌 2 + 桌面 A/B 刚打出的 2 张 = 4
+  assert.strictEqual(c.penaltyPile.length, 4, '转移数量 === 转移前手牌数 2 + 桌面遗留 2（桌面归最后持有者）');
+  assert.strictEqual(room.tablePile.length, 0, '桌面必须清空，不允许留无主牌');
   assert.strictEqual(room.currentPlayerId, null, '终局后不得再有 currentPlayerId');
   assert.strictEqual(holdersOf(room).length, 0, '终局后全场手牌皆空');
   assert.strictEqual(
     room.lastResult.results.find((r) => r.id === c.id).penaltyCount,
-    2,
-    'penaltyCount 语义不变：手牌并入 penaltyPile 后自然体现（未新增字段）'
+    4,
+    'penaltyCount 语义不变：手牌 + 桌面遗留并入 penaltyPile 后自然体现（未新增字段）'
   );
 });
 
@@ -520,16 +522,20 @@ test('新终局规则：2 人局 A 出完立即终局，B 从未出过的手牌�
   const pileBefore = b.penaltyPile.length;
   const handBefore = b.hand.length;
 
+  room.drawPile = [MONSTER('3'), MONSTER('5'), MONSTER('8')]; // 没发完的 3 张：未发数才有区分度
   const ret = playCard(room, a.id, [a.hand[0].id]);
 
   assert.strictEqual(ret.action, 'gameOver', '2 人局 A 出完 → 只剩 B 有牌 → 立即终局');
+  assert.strictEqual(room.lastResult.drawPileRemainder, 3,
+    'lastResult.drawPileRemainder 必须等于结算时摸牌堆长度（结算面板的账目脚注靠它）');
   assert.strictEqual(room.phase, 'settling');
   assert.strictEqual(b.hand.length, 0, '转移后 hand 必须清空');
-  assert.strictEqual(b.penaltyPile.length, pileBefore + handBefore, 'penaltyPile 增量 === 转移前 hand.length');
+  // 增量 = 手牌 3 + 桌面遗留 1（桌面归最后持有者，产品口径）
+  assert.strictEqual(b.penaltyPile.length, pileBefore + handBefore + 1, 'penaltyPile 增量 === 转移前 hand.length + 桌面遗留 1');
   assert.strictEqual(b.penaltyPile.filter((x) => x.rank === 'K').length, 1, '原来是手牌的那张 K 现在在败牌堆里');
   assert.ok(
-    room.eventLog.some((m) => m.includes('手里剩 3 张') && m.includes('全部计入败牌')),
-    `事件日志必须写清「剩 N 张全部计入败牌」（实际日志：${JSON.stringify(room.eventLog)}）`
+    room.eventLog.some((m) => m.includes('手里剩 3 张') && m.includes('桌面遗留 1 张')),
+    `事件日志必须写清「剩 N 张 + 桌面遗留 N 张一并计入败牌」（实际日志：${JSON.stringify(room.eventLog)}）`
   );
 });
 

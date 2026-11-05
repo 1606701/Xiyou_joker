@@ -258,6 +258,8 @@ const LAST_RESULT = {
     { id: 'p2', name: '沙僧', penaltyCount: 4 },
   ],
   winnerId: 'p1',
+  // 终局账目：1 + 3 + 4 = 8 张败牌 + 46 张未发 = 54。给非 0 值才有区分度
+  drawPileRemainder: 46,
 };
 
 /* ================= 场景 1：建房 → 房间面板 ================= */
@@ -298,6 +300,41 @@ test('终局：state(settling) 不切视图，gameEnd 才弹遮罩', () => {
   assert.ok(r.visible('view-game'), '遮罩叠在 view-game 之上，底层不应被切走');
   assert.strictEqual(r.getEl('#resultList').children.length, 3, '结算列表应有 3 行');
   assert.ok(String(r.getEl('#winnerBanner').textContent).includes('八戒'), '冠军横幅应含胜者名');
+});
+
+
+/* ================= 场景 3b：终局账目脚注 —— 「败牌合计 + 未发 = 54」必须闭合 ================= */
+test('★结算脚注：败牌合计 + 未发牌数 = 54 的账目必须写出来（否则玩家看到一个对不上的总数）', () => {
+  const r = makeRig();
+  r.socket.fire('roomJoined', { roomCode: '888', youId: 'p0', rejoinToken: 'tk', state: stBase('playing') });
+
+  // gameEnd 带 drawPileRemainder：脚注要写「合计 8 + 未发 46 = 54」
+  r.socket.fire('gameEnd', {
+    results: LAST_RESULT.results,
+    winnerIds: ['p1'],
+    winnerName: '八戒',
+    drawPileRemainder: 46,
+  });
+  const foot = String(r.getEl('#settleFoot').textContent);
+  assert.ok(foot.includes('合计 8 张'), `脚注应写「全场败牌合计 8 张」：实际「${foot}」`);
+  assert.ok(foot.includes('46'), `脚注应写未发 46 张：实际「${foot}」`);
+  assert.ok(foot.includes('54'), `脚注要把账闭合到 54：实际「${foot}」`);
+
+  // 摸牌堆正好发完：脚注要说「全部打完」，而不是显示「未发 0 张」
+  r.socket.fire('gameEnd', {
+    results: [{ id: 'p0', name: '悟空', penaltyCount: 54 }],
+    winnerIds: ['p0'],
+    winnerName: '悟空',
+    drawPileRemainder: 0,
+  });
+  const foot2 = String(r.getEl('#settleFoot').textContent);
+  assert.ok(foot2.includes('= 54'), `未发为 0 时应写「合计 54 张 = 54」：实际「${foot2}」`);
+  assert.ok(!foot2.includes('未发'), `未发为 0 时不应再出现「未发」字样：实际「${foot2}」`);
+
+  // 老版本 state（重连到还没加这个字段的服务端）：脚注必须静默为空，不得显示 undefined
+  r.socket.fire('gameEnd', { results: LAST_RESULT.results, winnerIds: ['p1'], winnerName: '八戒' });
+  assert.strictEqual(String(r.getEl('#settleFoot').textContent), '',
+    '拿不到 drawPileRemainder 时脚注应为空串，而不是把 undefined 渲染给玩家');
 });
 
 /* ================= 场景 4：★再来一局 —— 结算遮罩必须消失 ================= */

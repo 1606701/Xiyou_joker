@@ -404,6 +404,9 @@ function initNet(io, rooms, timings = {}) {
           winnerIds: [room.lastResult.winnerId],
           winnerName: winner ? winner.name : '',
           lastWinnerId: room.lastWinnerId,
+          // 未发牌数也要广播：结算面板靠它把「全场败牌合计 + 未发 = 54」这笔账闭合，
+          // 否则玩家只会看到一个对不上的总数（真实用户打过两局就来问了）。
+          drawPileRemainder: room.lastResult.drawPileRemainder,
         });
       }
     }

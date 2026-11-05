@@ -229,7 +229,7 @@ test(`soak：${GAMES} 局随机对局 × ${ROUNDS_PER_GAME} 轮，逐步校验�
         checkInvariants(room, where);
       }
       assert.strictEqual(room.phase, 'settling', `第 ${gi} 局第 ${round} 轮应以 settling 结束`);
-      if (room.eventLog.some((m) => m.includes('全部计入败牌'))) stats.carryOverRounds += 1;
+      if (room.eventLog.some((m) => m.includes('未能出完'))) stats.carryOverRounds += 1;
     }
 
     stats.games += 1;
@@ -259,7 +259,7 @@ test(`soak：${GAMES} 局随机对局 × ${ROUNDS_PER_GAME} 轮，逐步校验�
   assert.ok(stats.picks > 0, '本轮 soak 从未出现收牌，覆盖不足');
   assert.ok(
     stats.carryOverRounds > 0,
-    '本轮 soak 从未走到「只剩一人有牌 → 余牌计入败牌」的新终局路径，W3-ENG-RULE01 未被覆盖'
+    '本轮 soak 从未走到「只剩一人有牌 → 余牌+桌面遗留计入败牌」的新终局路径，W3-ENG-RULE01 未被覆盖'
   );
 });
 
@@ -415,7 +415,7 @@ test(`终止性：2 种选牌策略 × 3 人 / 6 人各 ${ENDGAME_GAMES} 局必�
           DECK_SIZE,
           `${where(gi)} 终局后牌不守恒（${zonesTotal} != ${DECK_SIZE}）：余牌被吞或牌被复制`
         );
-        if (room.eventLog.some((m) => m.includes('全部计入败牌'))) carryOver += 1;
+        if (room.eventLog.some((m) => m.includes('未能出完'))) carryOver += 1;
 
         maxActions = Math.max(maxActions, actions);
         maxPlays = Math.max(maxPlays, plays);
@@ -425,7 +425,7 @@ test(`终止性：2 种选牌策略 × 3 人 / 6 人各 ${ENDGAME_GAMES} 局必�
 
       assert.ok(
         carryOver > 0,
-        `[${arm.label}] ${n} 人局：${ENDGAME_GAMES} 局里从未走「余牌计入败牌」的新终局路径，覆盖不足`
+        `[${arm.label}] ${n} 人局：${ENDGAME_GAMES} 局里从未走「余牌+桌面遗留计入败牌」的新终局路径，覆盖不足`
       );
       // 每个 arm 各自打印自己的最大值 —— 否则余量从 1.42× 掉到 1.05× 也没人看得见
       report.push(
