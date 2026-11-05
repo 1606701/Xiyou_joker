@@ -618,7 +618,7 @@ test('★FX 节点：拿不到 animationend（减弱动效 / 后台标签页）�
 
 
 /* ================= 场景 16：卡面立绘 —— 牌点/样式/图片三者必须对齐 ================= */
-test('★卡面立绘：13 个角色牌挂 has-art + data-rank，功能牌 A/2 不挂', () => {
+test('★卡面立绘：角色牌与法宝牌都挂 has-art + data-rank（15 张全套）', () => {
   const r = makeRig();
   r.socket.fire('roomJoined', { roomCode: '888', youId: 'p0', rejoinToken: 'tk', state: stPlay(null, 0) });
 
@@ -632,11 +632,26 @@ test('★卡面立绘：13 个角色牌挂 has-art + data-rank，功能牌 A/2 �
   r.socket.fire('state', stPlay({ rank: 'SJ', suit: '★', kind: 'monster' }, 2));
   assert.ok(r.getEl('#topCard').innerHTML.includes('data-rank="SJ"'), 'SJ 也要带 data-rank');
 
-  // 功能牌：跳过（A）
+  // 功能牌：跳过（A）—— 配的是紫金红葫芦，现在也挂立绘
   r.socket.fire('state', stPlay({ rank: 'A', suit: '♦', kind: 'action' }, 3));
-  const act = r.getEl('#topCard').innerHTML;
-  assert.ok(!act.includes('has-art'), '功能牌不得挂 has-art —— 没有角色可画，要留纸底大字');
-  assert.ok(act.includes('data-rank="A"'), '功能牌仍要带 data-rank（将来加图只改一处）');
+  const a = r.getEl('#topCard').innerHTML;
+  assert.ok(a.includes('has-art'), 'A（紫金红葫芦）必须挂 has-art —— 功能牌现在也配法宝图');
+  assert.ok(a.includes('data-rank="A"'), 'A 必须带 data-rank，style.css 靠它选 --art');
+  // 图是「这是什么法宝」，字是「这张牌干什么」。配图不能把字条挤掉，
+  // 否则牌面变成一张纯插画，玩家读不出功能。
+  // 注：这里不能断言出现「跳过」二字 —— 假 DOM 的 fetch 桩只回了 { 4: '小妖' }，
+  // S.cardNames 里没有 A，name 会回退成 rank。断言结构（字条槽位仍在且是 action 配色）
+  // 才是这个环境里能站得住的判据；文案本身由 GET /api/cards 保证，属协议层。
+  assert.ok(/class="role action"/.test(a), 'A 的底部字条必须仍在，且是 action 配色 —— 图不能取代字');
+  assert.ok(!/class="role"/.test(a.replace(/class="role action"/, '')),
+    'A 不应同时出现两个 role 字条（重复渲染会让底部压两层字）');
+
+  // 功能牌：反转（2）—— 芭蕉扇
+  r.socket.fire('state', stPlay({ rank: '2', suit: '♣', kind: 'action' }, 4));
+  const two = r.getEl('#topCard').innerHTML;
+  assert.ok(two.includes('has-art'), '2（芭蕉扇）必须挂 has-art');
+  assert.ok(two.includes('data-rank="2"'), '2 必须带 data-rank');
+  assert.ok(/class="role action"/.test(two), '2 的底部字条必须仍在，且是 action 配色');
 });
 
 test('★资产一致性：ART_RANKS ↔ style.css 的 --art 规则 ↔ 磁盘 PNG，缺一张就红', () => {
@@ -645,14 +660,19 @@ test('★资产一致性：ART_RANKS ↔ style.css 的 --art 规则 ↔ 磁盘 P
   const css = fs.readFileSync(path.join(__dirname, '..', 'public', 'style.css'), 'utf8');
   const artDir = path.join(__dirname, '..', 'public', 'art', 'cards');
 
-  // 与 lib/cards.js 的 CARD_NAMES 对齐：这 13 个是有角色的牌
+  // 13 个角色（画「人」）+ 2 个法宝（画「物」：A 紫金红葫芦 / 2 芭蕉扇）
   const CHAR_RANKS = ['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'SJ', 'BJ'];
+  const ITEM_RANKS = ['A', '2'];
+  const ALL_RANKS = CHAR_RANKS.concat(ITEM_RANKS);
 
   const r = makeRig();
   r.socket.fire('roomJoined', { roomCode: '888', youId: 'p0', rejoinToken: 'tk', state: stPlay(null, 0) });
 
-  for (const rank of CHAR_RANKS) {
-    r.socket.fire('state', stPlay({ rank, suit: '♠', kind: 'monster' }, 1));
+  for (const rank of ALL_RANKS) {
+    // 角色牌 kind 用 monster / 法宝牌用 action：立绘判据只看 rank，
+    // 但 kind 决定底部字条配色，两处都用对才不会「测试通过、真机配色错」。
+    const kind = ITEM_RANKS.includes(rank) ? 'action' : 'monster';
+    r.socket.fire('state', stPlay({ rank, suit: '♠', kind }, 1));
     assert.ok(r.getEl('#topCard').innerHTML.includes('has-art'), `${rank} 应挂 has-art`);
 
     assert.ok(css.includes(`--art: url('/art/cards/${rank}.png')`),
@@ -661,15 +681,13 @@ test('★资产一致性：ART_RANKS ↔ style.css 的 --art 规则 ↔ 磁盘 P
       `public/art/cards/${rank}.png 不存在：CSS 会 404，牌面变空白`);
   }
 
-  // 反向：A / 2 绝不能有 --art 规则（否则会去请求不存在的图）
-  for (const rank of ['A', '2']) {
-    assert.ok(!css.includes(`/art/cards/${rank}.png`), `${rank} 是功能牌，不该有立绘规则`);
-  }
-
-  // 反向：磁盘上不该有孤儿图（有图没规则 = 白生成了，纯浪费体积）
+  // 反向：磁盘上不该有孤儿图（有图没规则 = 白生成了，纯浪费体积），
+  // 也不该有规则指向不存在的图（上面 existsSync 已覆盖，这里再锁一次集合相等）。
   const files = fs.readdirSync(artDir).filter((f) => f.endsWith('.png')).map((f) => f.replace(/\.png$/, ''));
-  const extra = files.filter((f) => !CHAR_RANKS.includes(f));
+  const extra = files.filter((f) => !ALL_RANKS.includes(f));
   assert.deepStrictEqual(extra, [], `art/cards 里有未接线的孤儿图: ${extra.join(', ')}`);
+  const missing = ALL_RANKS.filter((f) => !files.includes(f));
+  assert.deepStrictEqual(missing, [], `art/cards 缺少已接线的图: ${missing.join(', ')}`);
 });
 
 /* ================= 场景 17：布局陷阱护栏 ================= */
@@ -733,6 +751,31 @@ test('★方向环：进入对局即按 st.direction 挂方向类（1 顺时针 
 
   r.socket.fire('state', stBase('playing', { direction: 1 }));
   assert.ok(!r.getEl('#dirRing').classList.contains('ccw'), '再转回顺时针时要把 ccw 摘掉');
+
+  // 幂等：同一份 st 重复到达（重连 / 服务端重播 / 接力接管都会这样）。
+  // 方向没变时绝不能碰 ccw —— 摘掉会让 dirSpin 当场换向、再挂回去又是从 0° 重播，
+  // 真机上看就是环「抖一下角度」。state 每个动作都会来一次，一旦重挂，
+  // 这根本该匀速空转的环就变成一直在抽搐的装饰。
+  const ring = r.getEl('#dirRing');
+  const touched = [];
+  const rawRemove = ring.classList.remove;
+  ring.classList.remove = (c) => { if (c === 'ccw') touched.push('remove'); return rawRemove(c); };
+
+  r.socket.fire('state', stBase('playing', { direction: 1 })); // 与当前同一份方向
+  assert.ok(!ring.classList.contains('ccw'), '前置：这一帧仍是顺时针');
+  assert.deepStrictEqual(touched, [], '重复 state 不得摘 ccw —— 摘了就要重挂，空转动画从头播');
+
+  // 护栏不能连正常功能一起拦掉：方向真的变了，该类还得照挂
+  r.socket.fire('state', stBase('playing', { direction: -1 }));
+  assert.ok(ring.classList.contains('ccw'), '方向真的翻过来时必须挂上 ccw');
+  assert.deepStrictEqual(touched, [], '正常翻转不需要先摘再加，直接 toggle 即可');
+
+  // 逆时针下重复同样不许动（两个方向都钉死，别只测一半）
+  touched.length = 0;
+  r.socket.fire('state', stBase('playing', { direction: -1 }));
+  r.socket.fire('state', stBase('playing', { direction: -1 }));
+  assert.ok(ring.classList.contains('ccw'), '前置：仍是逆时针');
+  assert.deepStrictEqual(touched, [], '逆时针下重复 state 同样不得摘 ccw');
 });
 
 /* ================= 场景 22：★反转只播一次，且能连着播 ================= */

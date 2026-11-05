@@ -470,11 +470,20 @@ function renderSeats(st) {
 
 /**
  * 有立绘的牌点，与 public/art/cards/<rank>.png 一一对应（由 tools/build-card-art.py 产出）。
- * 功能牌 A / 2 故意不在此列：它们没有角色，硬塞一张立绘反而读不出「跳过 / 反转」，
- * 保持纸底大字比配图更清楚。要加牌就同时加图片和 style.css 里的 --art 规则，
- * test/frontend.test.js 有一条用例专门盯着这三者是否对齐。
+ *
+ * 13 个角色牌画的是「人」（沙僧 / 悟空 / 白骨精…）。
+ * 功能牌 A / 2 画的是「法宝」而不是人：A = 紫金红葫芦（能收纳 → 跳过），
+ * 2 = 芭蕉扇（扇风改向 → 反转方向）。语义其实比抽象符号更清楚 —— 真正的问题从来不是
+ * 「功能牌该不该配图」，而是「配什么」；配一件对应功能的法宝就成立了。
+ * 两张刻意用静物构图，与角色牌的人物构图拉开，一眼能分出「这是张功能牌」。
+ *
+ * 要加牌就同时加图片和 style.css 里的 --art 规则，
+ * test/frontend.test.js 有一条用例专门盯着这三者是否对齐（缺一张就红）。
  */
-const ART_RANKS = new Set(['3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'SJ', 'BJ']);
+const ART_RANKS = new Set([
+  '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'SJ', 'BJ', // 角色
+  'A', '2', // 法宝：紫金红葫芦 / 芭蕉扇
+]);
 
 function cardHtml(card, extraCls = '') {
   const rank = S.rankShow[card.rank] || card.rank;

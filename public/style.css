@@ -582,8 +582,12 @@ input[type="text"]::placeholder { color: var(--dim); }
 
 /* ===== 卡面立绘（public/art/cards/<rank>.png，5:7 与 .card 完全一致，cover 不会裁） =====
  * 有立绘的牌把点数/花色缩到左上角、让出整张画面；角色名条压在底部渐隐上。
- * 没有立绘的牌（A 跳过 / 2 反转）保持原来的纸底居中大字 —— 功能牌没有角色可画，
- * 硬配一张图反而读不出「跳过/反转」。
+ *
+ * 两类画的不是同一种东西，这是有意的：
+ *   · 3~K / SJ / BJ —— 画「人」（沙僧 / 悟空 / 白骨精…），人物构图
+ *   · A / 2        —— 画「法宝」（紫金红葫芦 / 芭蕉扇），静物构图
+ * 功能牌配的是与功能对应的法宝，所以底部的「跳过 / 反转」字条不但没被图盖住，
+ * 反而和图互相解释。静物 vs 人物也让功能牌一眼可辨，不必依赖底色。
  */
 .card[data-rank="3"]  { --art: url('/art/cards/3.png'); }
 .card[data-rank="4"]  { --art: url('/art/cards/4.png'); }
@@ -598,6 +602,9 @@ input[type="text"]::placeholder { color: var(--dim); }
 .card[data-rank="K"]  { --art: url('/art/cards/K.png'); }
 .card[data-rank="SJ"] { --art: url('/art/cards/SJ.png'); }
 .card[data-rank="BJ"] { --art: url('/art/cards/BJ.png'); }
+/* 法宝（功能牌）：紫金红葫芦 → 跳过；芭蕉扇 → 反转方向 */
+.card[data-rank="A"]  { --art: url('/art/cards/A.png'); }
+.card[data-rank="2"]  { --art: url('/art/cards/2.png'); }
 
 .card.has-art {
   background: var(--art) center / cover no-repeat;

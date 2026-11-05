@@ -37,6 +37,10 @@ DST_DIR = os.path.join('public', 'art', 'cards')
 
 # 关键字 -> 牌点。顺序敏感：长的、更具体的放前面。
 RANK_BY_KEYWORD = [
+    # 功能牌用「法宝」充当牌面：跳过＝紫金红葫芦（叫名就应，应声入袋→这一手作废），
+    # 反转＝芭蕉扇（一扇风向就掉个个儿）。顺序敏感：更具体的放前面。
+    ('紫金红葫芦', 'A'),
+    ('芭蕉扇', '2'),
     ('六耳猕猴', 'SJ'),
     ('金翅大鹏', 'BJ'),
     ('孙悟空', '5'),
@@ -87,16 +91,21 @@ def process(src_path, dst_path):
 
 
 def main():
+    # 允许显式指定源/目的目录：视觉验证时可以把成品先落到临时目录，
+    # 不污染 public/art/cards（那里有「孤儿图」断言盯着）。
+    positional = [a for a in sys.argv[1:] if not a.startswith('--')]
+    src_dir = positional[0] if positional else SRC_DIR
+    dst_dir = positional[1] if len(positional) > 1 else DST_DIR
     report = '--report' in sys.argv
 
-    if not os.path.isdir(SRC_DIR):
-        print('源目录不存在: %s（原始大图应放在仓库根目录的 art-src/ 下）' % SRC_DIR)
+    if not os.path.isdir(src_dir):
+        print('源目录不存在: %s（原始大图应放在仓库根目录的 art-src/ 下）' % src_dir)
         return 1
-    os.makedirs(DST_DIR, exist_ok=True)
+    os.makedirs(dst_dir, exist_ok=True)
 
-    files = [f for f in sorted(os.listdir(SRC_DIR))
+    files = [f for f in sorted(os.listdir(src_dir))
              if f.lower().endswith(('.png', '.jpg', '.jpeg'))
-             and os.path.isfile(os.path.join(SRC_DIR, f))]
+             and os.path.isfile(os.path.join(src_dir, f))]
     if not files:
         print('art-src/ 里没有图片')
         return 1
@@ -112,8 +121,8 @@ def main():
             print('  [跳过] 牌点 %s 已由 %s 占用（本条: %s）' % (rank, done[rank], f))
             continue
         done[rank] = f
-        dst = os.path.join(DST_DIR, '%s.png' % rank)
-        size = process(os.path.join(SRC_DIR, f), dst)
+        dst = os.path.join(dst_dir, '%s.png' % rank)
+        size = process(os.path.join(src_dir, f), dst)
         total += size
         print('  %-3s <- %-52s %6.1f KB' % (rank, f[:50], size / 1024.0))
 
@@ -123,8 +132,8 @@ def main():
         print('缺牌点: %s' % ', '.join(missing))
         return 2
     if report:
-        print('平均 %.1f KB/张 —— 13 张全量首屏约 %.1f KB，可接受' % (
-            total / 1024.0 / len(done), total / 1024.0))
+        print('平均 %.1f KB/张 —— %d 张全量首屏约 %.1f KB，可接受' % (
+            total / 1024.0 / len(done), len(done), total / 1024.0))
     return 0
 
 
