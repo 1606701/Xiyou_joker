@@ -718,6 +718,103 @@ test('整局闭环：连续出牌/收牌直到 settling，全程无 error（防�
 });
 
 /* ============================================================
+ * 11b. 收牌路径的终局广播（W3-QA-RULE01 复核补充）
+ *
+ * 背景：终局判定从「摸牌堆空 + 收牌即终局」改为「只剩一人有牌」之后，本文件的
+ * forceSettle 改走 playCard 路径，于是 net 层 pickUp 处理器里的
+ * `if (res.action === 'gameOver') sendGameEnd(room)` 变成无人覆盖的死角 ——
+ * 把那一行变异成 if (false) 时全套 net 用例仍然全绿（QA 实测），而线上后果是
+ * 客户端永远停在牌桌上（收不到 gameEnd 就没有结算面板）。
+ * 这两条把「收牌也能触发终局」的两条子路径钉回回归线上：
+ *   ① 收牌补牌后只剩收牌者有牌（closeOutLastHolder）→ 余牌计入败牌 + gameEnd
+ *   ② 全场手牌皆空（holders === 0 兜底）→ 直接结算 + gameEnd
+ * ============================================================ */
+
+/** 把房间布置成「当前玩家必须收牌」的残局：桌面单张 K、摸牌堆空、其他人手上没牌 */
+function rigPickupEndgame(room, cur, { keepCurrentHand = true } = {}) {
+  for (const p of room.players) {
+    p.hand = [];
+    p.penaltyPile = [];
+  }
+  const top = MONSTER('K');
+  room.topCard = top;
+  room.topCount = 1;
+  room.tablePile = [top];
+  room.drawPile = [];
+  cur.hand = keepCurrentHand ? [MONSTER('4'), MONSTER('6')] : [];
+  room.currentPlayerId = cur.id;
+}
+
+test('收牌触发终局（余牌计入败牌）：pickUp → gameOver 必须下发 gameEnd、清回合、余牌并入败牌堆', (t) => {
+  const h = makeHarness();
+  t.after(() => h.dispose());
+  const { host, others, room } = startThree(h);
+  const cur = playerOf(room, host);
+
+  rigPickupEndgame(room, cur);
+  const moves = engine.computeLegalMoves(room, cur.id);
+  assert.strictEqual(moves.beats.length + moves.actions.length, 0, '前置：收牌必须是唯一合法动作');
+
+  host.clear();
+  others.forEach((s) => s.clear());
+  host.send('pickUp');
+
+  // 引擎侧
+  assert.deepStrictEqual(host.all('error'), [], '收牌触发终局不应产生错误提示');
+  assert.strictEqual(room.phase, 'settling', '收牌后只剩收牌者有牌 → 必须直接终局');
+  assert.strictEqual(room.currentPlayerId, null, '终局后不得残留回合');
+  assert.strictEqual(cur.hand.length, 0, '余牌必须腾空（否则少算败牌）');
+  assert.strictEqual(cur.penaltyPile.length, 3, '桌面 1 张 + 手上 2 张全部计入败牌');
+
+  // 协议侧：gameEnd 是客户端离开牌桌、弹出结算面板的唯一依据
+  const ge = host.last('gameEnd');
+  assert.ok(ge, '收牌触发的终局也必须下发 gameEnd（否则客户端停在牌桌上）');
+  assert.strictEqual(ge.results.length, 3, 'gameEnd 必须覆盖全员');
+  assert.deepStrictEqual(ge.winnerIds, [room.lastResult.winnerId], 'gameEnd.winnerIds 必须与 lastResult.winnerId 一致');
+  assert.strictEqual(
+    ge.results.find((r) => r.id === cur.id).penaltyCount,
+    3,
+    'gameEnd 的 penaltyCount 必须已含并入的余牌'
+  );
+  for (const s of [host, ...others]) {
+    assert.ok(s.last('gameEnd'), `${s.id} 也必须收到 gameEnd`);
+    assert.ok(s.last('state'), `${s.id} 必须收到 state 广播`);
+    assert.strictEqual(s.last('yourTurn'), undefined, '终局后不得再给任何人下发 yourTurn');
+  }
+});
+
+test('兜底：全场手牌皆空时收牌 → holders=0 兜底结算，协议层同样下发 gameEnd', (t) => {
+  const h = makeHarness();
+  t.after(() => h.dispose());
+  const { host, others, room } = startThree(h);
+  const cur = playerOf(room, host);
+
+  rigPickupEndgame(room, cur, { keepCurrentHand: false });
+  assert.strictEqual(
+    room.players.filter((p) => p.hand.length > 0).length,
+    0,
+    '前置：全场手牌皆空'
+  );
+
+  host.clear();
+  others.forEach((s) => s.clear());
+  host.send('pickUp');
+
+  assert.deepStrictEqual(host.all('error'), [], '兜底结算不应报错（不得因无手牌可转移而抛错）');
+  assert.strictEqual(room.phase, 'settling', 'holders=0 → 必须兜底结算（不得卡在 playing 空转）');
+  assert.strictEqual(room.currentPlayerId, null, '终局后不得残留回合');
+  assert.strictEqual(cur.penaltyPile.length, 1, '桌面 1 张仍计入收牌者败牌堆');
+
+  const ge = host.last('gameEnd');
+  assert.ok(ge, '兜底结算也必须下发 gameEnd');
+  assert.deepStrictEqual(ge.winnerIds, [room.lastResult.winnerId], 'gameEnd.winnerIds 必须与 lastResult 一致');
+  for (const s of [host, ...others]) {
+    assert.ok(s.last('gameEnd'), `${s.id} 也必须收到 gameEnd`);
+    assert.strictEqual(s.last('yourTurn'), undefined, '终局后不得再给任何人下发 yourTurn');
+  }
+});
+
+/* ============================================================
  * 12. 定时参数契约
  * ============================================================ */
 

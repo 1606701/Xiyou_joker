@@ -332,6 +332,15 @@ test(`终止性：3 人与 6 人各 ${ENDGAME_GAMES} 局确定性对局必须在
       );
       assert.strictEqual(room.currentPlayerId, null, `${n} 人局第 ${gi} 局终局后不得有 currentPlayerId`);
       for (const p of room.players) assert.strictEqual(p.hand.length, 0, `${n} 人局第 ${gi} 局终局后 ${p.name} 手里还留着牌`);
+      // 终局后也要复核牌守恒（QA 复核补）：只「hand=[]」而不并入败牌堆会把牌吞掉，
+      // 这种变异在单跑本用例时不会被上面的断言发现（那也是 hand=0），只有这里能抓住。
+      const zonesTotal = room.drawPile.length + room.tablePile.length +
+        room.players.reduce((s2, p) => s2 + p.hand.length + p.penaltyPile.length, 0);
+      assert.strictEqual(
+        zonesTotal,
+        DECK_SIZE,
+        `${n} 人局第 ${gi} 局终局后牌不守恒（${zonesTotal} != ${DECK_SIZE}）：余牌被吞或牌被复制`
+      );
       if (room.eventLog.some((m) => m.includes('全部计入败牌'))) carryOver += 1;
 
       maxActions = Math.max(maxActions, actions);
