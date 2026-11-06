@@ -55,3 +55,29 @@ test/              node:test 单元测试
 ```bash
 npm test
 ```
+
+## 部署到香橙派（192.168.3.185:3000）
+
+这台板子已经把它当作门户的一个「游戏」模块在跑：systemd 托管、跟着门户的
+版本对比页一起升级，出问题会自动重启。
+
+```bash
+# 首次
+git clone <镜像> ~/Yangfan_WorkSpace/xiyou_joker
+cd ~/Yangfan_WorkSpace/xiyou_joker && npm ci --omit=dev
+sudo install -m 644 deploy/xiyou-joker.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now xiyou-joker.service
+
+# 之后改代码：本机 push 到镜像，页面点「升级」即可
+git push mirror main
+```
+
+几个和板子相关的约束（换机器部署也会遇到）：
+
+- **`node_modules` 不进版本库**，所以镜像里没有依赖，换机器必须单独跑一次 `npm ci`。
+  `package.json` 没变就不用重跑。
+- **日志写 `/var/log/xiyou-joker.log`**：这块板子的 journald 收不到应用日志，
+  `journalctl -u xiyou-joker` 永远是空的，别在那里找。
+- **`Restart=always` 是必需的**：板子上 node 启动有约 7% 概率直接崩
+  （V8 deserialization OOM，不是内存不足），不自动重启会永久离线。
+- **房间是内存态**，重启服务会把正在进行的牌局清空，升级别挑有人玩的时候。
