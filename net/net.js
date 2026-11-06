@@ -611,7 +611,13 @@ function initNet(io, rooms, timings = {}) {
       }
     });
 
-    /** 收牌（仅无合法牌时；无牌时会自动执行） */
+    /**
+     * 收牌 / 主动放弃（W4-ENG-RULE02）：
+     * - 无合法牌时：本来就是唯一能走的动作，超时也会自动执行；
+     * - **有合法牌时**：这是玩家主动放弃，桌面全部进自己败牌，换一手新牌 + 新一轮先手。
+     *   规则校验全在 engine.pickUp 里（空桌面会被 NOTHING_TO_PICK 拒掉），net 层不做第二套判断 ——
+     *   两边各写一遍就会出现「协议允许、引擎拒绝」这种只在某个入口复现的裂缝。
+     */
     socket.on('pickUp', () => {
       const room = roomOfPlayer(socket);
       if (!room) return fail('ROOM_NOT_FOUND', '未在房间中');

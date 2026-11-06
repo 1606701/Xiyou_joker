@@ -24,7 +24,9 @@ const ERROR_TEXT = {
   GAME_RUNNING: '对局已开始，无法加入',
   NOT_YOUR_TURN: '还没轮到您出牌',
   ILLEGAL_CARD: '这张牌不能压制当前门槛牌',
-  MUST_PLAY: '您还有可出的牌，不能收牌',
+  // W4-ENG-RULE02 起没有 MUST_PLAY 了（有牌也能主动收牌），取而代之的是「空桌面不许收」。
+  // 留着旧键会让下一个人以为「有牌不能收」这条规则还在。
+  NOTHING_TO_PICK: '桌面没有牌可收，请出牌',
   NOT_READY: '有玩家未准备',
   NOT_OWNER: '只有房主可以开始',
   BAD_PHASE: '当前状态不允许该操作',
@@ -48,6 +50,8 @@ const S = {
   turnTimerRaf: null,                   // 回合倒计时的 rAF 句柄（无 rAF 环境为 null）
   lastTickSec: 0,                        // 报时去重：3/2/1 各响一次
   prevPlayerIds: '',                     // 上一帧的玩家 id 串：用来听出「有人加入 / 加了 AI」
+  pickupArmedAt: 0,                      // 「放弃出牌」按钮进入确认态的时刻（0 = 未进入）
+  pickupArmTimer: null,                  // 确认态的自动回退定时器
 };
 
 /* ---------- 工具 ---------- */
@@ -205,6 +209,9 @@ function connectSocket() {
   S.socket.on('yourTurn', ({ legalMoves, deadline }) => {
     S.myTurn = { legalMoves, deadline };
     S.selectedIds = [];
+    // 新的回合开始 → 上一回合可能残留的「确认放弃」态必须清掉，
+    // 否则上一手点过一次、这一手第一下就直接把桌面吃进来了（两次误触叠成一次真实操作）。
+    disarmPickup();
     // 不切视图：服务端保证 sendTurn 之前必有一次 broadcastState（state 处理器已切到 view-game），
     // 这里只做兜底告警 —— 如果将来这个不变量被破坏，控制台会告诉我们，而不是让用户看不见桌面。
     renderGame();
@@ -527,6 +534,56 @@ function toggleSelect(sel, id, hand) {
   return [...rest, id];
 }
 
+/**
+ * ---------- 「收牌 / 放弃出牌」按钮（W4-ENG-RULE02） ----------
+ *
+ * 规则改动：以前「有牌可出 → 必须出」，收牌按钮只在无牌可出时出现。
+ * 现在手上有牌也能主动放弃（桌面全部进自己败牌，换一手新牌 + 新一轮先手），
+ * 所以按钮的可见条件从「无牌可出」放宽到「桌面还有牌」。
+ *
+ * 两种情形的文案必须不同，因为代价不同：
+ *  - 无牌可出：没有选择，收了就收了 → 「收牌 · 桌面 N 张」，点了就发。
+ *  - 有牌可出：这是**主动**把 N 张牌记进自己败牌 → 「放弃出牌 · 吃下 N 张」，要二次确认。
+ *
+ * 二次确认不用 window.confirm：手机上弹窗打断节奏，这动作也不致命（多点一次而已）。
+ * 改成「按钮自身进入确认态 3 秒」，误触成本最低，也不需要额外 DOM 与样式。
+ */
+const PICKUP_ARM_MS = 3000;
+
+function isPickupArmed() {
+  return !!S.pickupArmedAt && Date.now() - S.pickupArmedAt < PICKUP_ARM_MS;
+}
+
+/** 退出确认态。不负责重绘 —— 调用方自己决定何时重绘（有的路径在同一次事件里连着重绘）。 */
+function disarmPickup() {
+  S.pickupArmedAt = 0;
+  if (S.pickupArmTimer) { clearTimeout(S.pickupArmTimer); S.pickupArmTimer = null; }
+  const btn = $('#btnPickup');
+  if (btn) btn.classList.remove('armed');
+  return btn;
+}
+
+/**
+ * 按当前局面刷新按钮的显隐与文案。
+ * @param {boolean} isMyTurn 轮到我且在对局中
+ * @param {number} pileCount 桌面牌数（= 放弃的代价）
+ * @param {boolean} canPlayAny 我是否有合法出牌（决定「收牌」还是「放弃」）
+ */
+function updatePickupBtn(isMyTurn, pileCount, canPlayAny) {
+  const btn = $('#btnPickup');
+  if (!btn) return;
+  const show = isMyTurn && pileCount > 0;
+  btn.classList.toggle('hidden', !show);
+  if (!show) { S.pickupArmedAt = 0; return; }
+  const armed = canPlayAny && isPickupArmed();
+  btn.classList.toggle('armed', armed);
+  btn.textContent = armed
+    ? `确认放弃？桌面 ${pileCount} 张进败牌`
+    : canPlayAny
+      ? `放弃出牌 · 吃下 ${pileCount} 张`
+      : `收牌 · 桌面 ${pileCount} 张`;
+}
+
 function renderHand(st) {
   const el = $('#hand');
   el.innerHTML = '';
@@ -561,7 +618,9 @@ function renderHand(st) {
   });
 
   const canPlayAny = legal && (legal.beats.length > 0 || legal.actions.length > 0);
-  $('#btnPickup').classList.toggle('hidden', !(isMyTurn && legal && !canPlayAny));
+  // 可见性不再依赖 canPlayAny：有牌也能放弃，只要桌面还有牌可收。
+  // 桌面为空时引擎会抛 NOTHING_TO_PICK，按钮干脆不出现，别让人点了才被拒。
+  updatePickupBtn(isMyTurn, st.tablePileCount || 0, !!canPlayAny);
   $('#btnPlay').classList.toggle('hidden', !(isMyTurn && S.selectedIds.length > 0));
 }
 
@@ -935,11 +994,30 @@ function bindEvents() {
   });
 
   $('#btnPickup').addEventListener('click', () => {
+    const st = S.state;
+    const pile = st ? (st.tablePileCount || 0) : 0;
+    const lm = S.myTurn && S.myTurn.legalMoves;
+    const canPlayAny = !!(lm && (lm.beats.length > 0 || lm.actions.length > 0));
+
+    // 有牌可出 → 这是「主动放弃」，走两步确认；无牌可出 → 本来就没得选，直接发。
+    if (canPlayAny && !isPickupArmed()) {
+      S.pickupArmedAt = Date.now();
+      if (S.pickupArmTimer) clearTimeout(S.pickupArmTimer);
+      S.pickupArmTimer = setTimeout(() => {
+        S.pickupArmTimer = null;
+        S.pickupArmedAt = 0;
+        if (S.state) renderHand(S.state);
+      }, PICKUP_ARM_MS);
+      if (st) renderHand(st);
+      return;
+    }
+    disarmPickup();
     // 收牌手感：桌面那张牌飞向自己座位
     const meAvatar = document.querySelector('#seats .seat.me .avatar');
     const tableCard = document.querySelector('#topCard .card');
     const toRect = rectOf(meAvatar);
     if (toRect) flyGhost(tableCard, toRect, 12);
+    if (S.state) renderHand(S.state); // 立刻回退文案，别让「确认放弃？」留在屏上到下一帧
     S.socket.emit('pickUp');
   });
 

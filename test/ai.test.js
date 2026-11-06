@@ -259,6 +259,7 @@ test('合法性穷举：300 个随机房间，chooseMove 的返回必须能被�
   const pick = (arr) => arr[Math.floor(rng() * arr.length)];
   const counts = { play: 0, pickup: 0 };
   const openingCounts = { true: 0, false: 0 };
+  let voluntary = 0; // 「有牌可出但主动收牌」的次数（W4-ENG-RULE02）
 
   for (let iter = 0; iter < 300; iter++) {
     const pool = buildDeck();
@@ -288,8 +289,16 @@ test('合法性穷举：300 个随机房间，chooseMove 的返回必须能被�
     assert.ok(mv && (mv.type === 'play' || mv.type === 'pickup'), `第 ${iter} 次：返回结构非法`);
     if (moves.beats.length === 0 && moves.actions.length === 0) {
       assert.strictEqual(mv.type, 'pickup', `第 ${iter} 次：无牌可出必须收牌`);
-    } else {
-      assert.strictEqual(mv.type, 'play', `第 ${iter} 次：有牌可出却选择了收牌`);
+    } else if (mv.type === 'pickup') {
+      // W4-ENG-RULE02 起「有牌可出」不再等于「必须出牌」：主动收牌是合法动作。
+      // 但**只有桌面有牌时才允许**（空桌面收牌 = 无损刷手牌，引擎会抛 NOTHING_TO_PICK）。
+      // 这条断言与下面那条 doesNotThrow 是互补的：这里先说清「为什么可以收」，
+      // 那里再兜「引擎确实接受了」。
+      assert.ok(
+        room.tablePile.length > 0,
+        `第 ${iter} 次：桌面为空却选择主动收牌 —— 这正是无限刷手牌那个漏洞的形状`
+      );
+      voluntary += 1;
     }
 
     // 核心断言：不抛错即证明「策略输出 ⊆ 引擎认可」
@@ -308,4 +317,8 @@ test('合法性穷举：300 个随机房间，chooseMove 的返回必须能被�
   assert.ok(counts.pickup > 10, `收牌分支覆盖不足：${counts.pickup}`);
   assert.ok(openingCounts.true > 20, `开轮情境覆盖不足：${openingCounts.true}`);
   assert.ok(openingCounts.false > 20, `跟牌情境覆盖不足：${openingCounts.false}`);
+  // 新分支必须真被走到：300 个随机房间里一次都没触发，等于 shouldVoluntaryPickup
+  // 永远返回 false —— 那种「绿着但不干活」的分支比红灯更危险。
+  assert.ok(voluntary > 0, '主动收牌分支一次都没触发：判据可能已退化成恒 false');
+  assert.ok(voluntary < counts.play, `主动收牌不能变成主流选择（${voluntary} vs 出牌 ${counts.play}）—— 那是躲牌，不是策略`);
 });

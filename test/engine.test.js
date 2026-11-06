@@ -119,10 +119,37 @@ test('非当前玩家出牌被拒绝', () => {
   assert.throws(() => playCard(room, list[1].id, [six.id]), (e) => e.code === 'NOT_YOUR_TURN');
 });
 
-test('能压制时不允许收牌', () => {
+test('主动收牌（W4-ENG-RULE02）：能压制时也可以收 —— 桌面进败牌、自己重开新一轮', () => {
   const { room, list } = makeGame({ topCard: MONSTER('4'), tablePile: [MONSTER('4')] });
-  // P0 手上有 6 可压
-  assert.throws(() => pickUp(room, list[0].id), (e) => e.code === 'MUST_PLAY');
+  const p0 = list[0];
+  // P0 手上有 6 可压（旧规则在这里抛 MUST_PLAY）
+  assert.ok(computeLegalMoves(room, p0.id).beats.length > 0, '前置：P0 确实有牌可出');
+  const handBefore = p0.hand.length;
+
+  const ret = pickUp(room, p0.id);
+
+  assert.strictEqual(ret.action, 'pickedUp');
+  assert.strictEqual(p0.penaltyPile.length, 1, '桌面那 1 张必须进收牌者败牌');
+  assert.strictEqual(room.tablePile.length, 0, '桌面清空');
+  assert.strictEqual(room.topCard, null, '收牌后回到开轮');
+  assert.strictEqual(room.currentPlayerId, p0.id, '收牌者成为新一轮先出者');
+  assert.strictEqual(p0.hand.length, handBefore, '本例摸牌堆为空，手牌数不变');
+  assert.ok(
+    room.eventLog.some((m) => m.includes('放弃出牌')),
+    `日志要能区分「主动放弃」与「无法出牌」，实际：${JSON.stringify(room.eventLog.slice(-2))}`
+  );
+});
+
+test('非法收牌：桌面为空且还有牌可出 → NOTHING_TO_PICK（封无限刷手牌）', () => {
+  // 这一条守的是一个真漏洞，不是防御性冗余：开轮桌面为空、而开轮必定有牌可出，
+  // 若允许「收 0 张 → 补满 5 张 → 仍是先手」，就能一分败牌不涨地无限重刷手牌。
+  const { room, list } = makeGame();
+  assert.strictEqual(room.tablePile.length, 0, '前置：桌面为空');
+  assert.ok(computeLegalMoves(room, list[0].id).beats.length > 0, '前置：P0 有牌可出');
+  const handBefore = list[0].hand.length;
+  assert.throws(() => pickUp(room, list[0].id), (e) => e.code === 'NOTHING_TO_PICK');
+  assert.strictEqual(list[0].hand.length, handBefore, '被拒后手牌必须原样不动');
+  assert.strictEqual(room.currentPlayerId, list[0].id, '被拒后回合不变');
 });
 
 // ---- 收牌 / 补牌 / 重开 ----
@@ -425,14 +452,22 @@ test('BUG-007：连续两个 2 回到原方向，topCard 仍为 null 且仍是�
   assert.strictEqual(computeLegalMoves(room, list[0].id).opening, true);
 });
 
-test('BUG-007：功能牌开轮后，有牌可出的玩家收牌仍抛 MUST_PLAY（不得误判为可收）', () => {
+test('BUG-007：功能牌开轮后（topCard=null 但桌面有牌），有牌可出的玩家主动收牌必须走通、不得抛 TypeError', () => {
   const { room, list } = makeGame();
   const a = list[0].hand.find((c) => c.rank === 'A');
   playCard(room, list[0].id, [a.id]);
 
-  // 下家手上有 4/6/5/10，无门槛 → 都能出，因此不允许收牌
-  assert.throws(() => pickUp(room, list[1].id), (e) => e.code === 'MUST_PLAY');
-  assert.strictEqual(room.tablePile.length, 1, '被拒后桌面不变');
+  // A 不设门槛 → topCard 仍是 null，但桌面已经有 1 张牌。旧实现用 tablePile.length 判开轮，
+  // 于是在这里访问 room.topCard.kind 抛 TypeError —— 那才是 BUG-007 的真靶点。
+  assert.strictEqual(room.topCard, null, '前置：A 不设门槛牌');
+  assert.strictEqual(room.tablePile.length, 1, '前置：桌面有 1 张（这张 A）');
+
+  // 下家手上有 4/6/5/10，无门槛 → 都能出。旧规则抛 MUST_PLAY（BUG-007 曾被误判成「必须可收」），
+  // W4-ENG-RULE02 起这是**合法**的主动放弃，要求整条路径真正跑完 —— 比只断言「没抛 TypeError」更严。
+  const ret = pickUp(room, list[1].id);
+  assert.strictEqual(ret.action, 'pickedUp');
+  assert.strictEqual(list[1].penaltyPile.length, 1, '桌面那张 A 必须进收牌者败牌');
+  assert.strictEqual(room.tablePile.length, 0, '桌面清空');
 });
 
 test('BUG-007：开轮打出的 A 留在桌面，下一次收牌时进入败牌堆', () => {

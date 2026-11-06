@@ -179,6 +179,21 @@ input[type="text"]::placeholder { color: var(--dim); }
   border-color: var(--danger);
   color: #E79A95;
 }
+/* 「放弃出牌」的两步确认态：第一次点击后按钮变成确认按钮。
+   实心红 + 呼吸一次，让人一眼看出「这一下真的会把桌面吃进来」，
+   别做成和普通按钮一样的样式，否则第二步和第一步看起来没区别，确认就白做了。 */
+.btn.danger.armed {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+  font-weight: 600;
+  animation: pickup-arm-pulse 0.28s ease-out;
+}
+@keyframes pickup-arm-pulse {
+  0%   { transform: scale(1); }
+  50%  { transform: scale(1.04); }
+  100% { transform: scale(1); }
+}
 .btn.ghost {
   background: transparent;
   border-color: transparent;

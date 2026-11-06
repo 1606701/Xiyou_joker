@@ -466,14 +466,44 @@ test('非法出牌：压不住门槛牌 → ILLEGAL_CARD', (t) => {
   assert.strictEqual(me.hand.length, 1, '手牌不应被扣除');
 });
 
-test('非法收牌：还有牌可出时收牌 → MUST_PLAY', (t) => {
+test('主动收牌（W4-ENG-RULE02）：有牌可出也能收 → 桌面进败牌、自己重开新一轮', (t) => {
   const h = makeHarness();
   t.after(() => h.dispose());
 
   const { host, room } = startThree(h);
+  const me = room.players.find((p) => p.id === host.playerId);
+  // 造局面：桌面 2 张、门槛 1 张，我手上还有能压的 6 —— 旧规则这里抛 MUST_PLAY
+  room.tablePile = [MONSTER('4'), MONSTER('4')];
+  room.topCard = MONSTER('4');
+  room.topCount = 1;
+  me.hand = [MONSTER('6'), MONSTER('6'), MONSTER('7')];
+  const pileBefore = me.penaltyPile.length;
   host.clear();
+
   host.send('pickUp');
-  assert.strictEqual(host.last('error').code, 'MUST_PLAY');
+
+  assert.deepStrictEqual(host.all('error'), [], '主动收牌不应报错');
+  assert.strictEqual(me.penaltyPile.length, pileBefore + 2, '桌面 2 张必须进自己败牌');
+  assert.strictEqual(room.tablePile.length, 0, '桌面清空');
+  assert.strictEqual(room.currentPlayerId, me.id, '收牌者成为新一轮先出者');
+  assert.ok(host.last('yourTurn'), '收牌后应重新下发 yourTurn');
+});
+
+test('非法收牌：桌面为空时收牌 → NOTHING_TO_PICK（否则可无限刷手牌）', (t) => {
+  const h = makeHarness();
+  t.after(() => h.dispose());
+
+  const { host, room } = startThree(h);
+  const me = room.players.find((p) => p.id === host.playerId);
+  room.tablePile = [];
+  room.topCard = null;
+  const handBefore = me.hand.length;
+  host.clear();
+
+  host.send('pickUp');
+
+  assert.strictEqual(host.last('error').code, 'NOTHING_TO_PICK');
+  assert.strictEqual(me.hand.length, handBefore, '被拒后手牌必须原样不动（这条就是防刷牌的靶心）');
   assert.strictEqual(room.phase, 'playing');
 });
 

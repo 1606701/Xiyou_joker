@@ -879,3 +879,38 @@ test('★方向环层级：z-index 低于 .event-log 与 #fx，且 pointer-event
   assert.ok(ringZ < logZ, `环(${ringZ}) 必须低于 .event-log(${logZ})，否则会糊住日志文字`);
   assert.ok(ringZ < fxZ, `环(${ringZ}) 应低于冲击波层 #fx(${fxZ})，压制特效要盖在环之上`);
 });
+
+/* ================= 场景 25：收牌 / 放弃出牌按钮（W4-ENG-RULE02） ================= */
+test('★放弃出牌按钮：桌面有牌就出现；有牌可出时必须点两下才真的发出去', () => {
+  const r = makeRig();
+  const hand = [{ id: 'c1', rank: '6', suit: '♠', kind: 'monster' }];
+  const pickUps = () => r.socket.emitted.filter((e) => e.evt === 'pickUp').length;
+  r.socket.fire('roomJoined', { roomCode: '888', youId: 'p0', rejoinToken: 'tk', state: stPlay(null, 0, { hand }) });
+  const btn = r.getEl('#btnPickup');
+
+  // ① 桌面为空：按钮不出现。引擎那边也会抛 NOTHING_TO_PICK —— 按钮先挡住，别让人点了才被拒。
+  r.socket.fire('yourTurn', { legalMoves: { opening: true, beats: [['c1']], actions: [] }, deadline: Date.now() + 30000 });
+  assert.ok(btn.classList.contains('hidden'), '桌面为空时不该出现收牌按钮（空桌面收牌会变成无限刷手牌）');
+
+  // ② 有牌可出 + 桌面 2 张：出现，且是「主动放弃」的两步确认
+  r.socket.fire('state', stPlay(C4, 2, { hand }));
+  assert.ok(!btn.classList.contains('hidden'), '桌面有牌时按钮必须出现（旧的实现只在无牌可出时显示）');
+  assert.match(btn.textContent, /放弃出牌/, `有牌可出时应说「放弃」而不是「收牌」，实际：${btn.textContent}`);
+  assert.match(btn.textContent, /2/, '文案要把代价（桌面张数）写出来');
+
+  click(btn);
+  assert.strictEqual(pickUps(), 0, '第一下只进入确认态，不得发出 pickUp');
+  assert.match(btn.textContent, /确认放弃/, `第一下后必须变成确认文案，实际：${btn.textContent}`);
+
+  click(btn);
+  assert.strictEqual(pickUps(), 1, '第二下才真的发出去');
+
+  // ③ 无牌可出 + 桌面 3 张：本来就没得选，不搞两步，点一下即发
+  r.socket.fire('state', stPlay(C4, 3, { hand }));
+  r.socket.fire('yourTurn', { legalMoves: { opening: false, beats: [], actions: [] }, deadline: Date.now() + 30000 });
+  assert.ok(!btn.classList.contains('hidden'), '无牌可出时按钮当然要在');
+  assert.match(btn.textContent, /收牌/, `无牌可出时应说「收牌」，实际：${btn.textContent}`);
+  const before = pickUps();
+  click(btn);
+  assert.strictEqual(pickUps(), before + 1, '无牌可出时不该再要一次确认 —— 那只会让人多点一下');
+});

@@ -817,12 +817,17 @@ test('对抗 9：非当前玩家 playCard / pickUp 被拒，且不得清掉当�
   assert.strictEqual(room.currentPlayerId, baseline.cur, '违规调用不得改回合');
   assert.strictEqual(rig.ledger.timeouts().length, baseline.timers, '违规调用不得清掉当前玩家的托管定时器');
 
-  // 当前玩家有牌可出时收牌 → MUST_PLAY
-  setTopK(ctx);
+  // 当前玩家「桌面为空还想收牌」→ NOTHING_TO_PICK。
+  // W4-ENG-RULE02 起「有牌可出」不再是拒绝理由（主动放弃是合法动作，正向用例见 net.test.js），
+  // 但空桌面必须拒 —— 否则「收 0 张、补满 5 张、还是先手」可以无限刷手牌。
+  const timersBefore = rig.ledger.timeouts().length;
+  room.topCard = null;
+  room.tablePile = [];
   playerOf(room, cur).hand = [MONSTER('4'), MONSTER('BJ')];
   cur.clear();
   cur.fire('pickUp');
-  assert.strictEqual(cur.last('error').code, 'MUST_PLAY');
+  assert.strictEqual(cur.last('error').code, 'NOTHING_TO_PICK');
+  assert.strictEqual(rig.ledger.timeouts().length, timersBefore, '被拒的收牌不得动定时器账本');
 
   // 结算页越权：非房主 nextRound / start 都必须被拒（BUG-003）
   forceSettle(ctx);
@@ -1021,33 +1026,29 @@ test('回归 BUG-007（QA 原编号 P0-01b）：功能牌开轮后的桌面状�
   assert.strictEqual(room.topCard, null, 'A 不设置门槛牌');
   assert.strictEqual(room.tablePile.length, 1, 'A 仍留在桌面（收牌时一并进败牌堆）');
 
-  // ① 有牌可出时收牌：必须是业务错误 MUST_PLAY，而不是因 topCard=null 抛的内部异常。
-  //    修正（已回传 team-lead）：原断言要求「完全没有 error 事件」，这与规则冲突 ——
-  //    有牌可出时收牌本就该被拒（engine 抛 MUST_PLAY），修好 BUG-007 后这条反而是正确行为。
+  // ① 有牌可出时收牌：W4-ENG-RULE02 起这是**合法**的主动放弃，必须干净地成功。
+  //    BUG-007 的真靶点反而在这里被验得更彻底：旧实现用 tablePile.length 判开轮、随后访问
+  //    room.topCard.kind 会抛 TypeError —— 那条路径一旦回来，这里收到的会是 INTERNAL
+  //    而不是一次正常的 pickedUp。（旧版本断言「必须被 MUST_PLAY 拒绝」，只是"没抛 TypeError"的
+  //    间接证据；现在直接断言整条路径跑完。）
   nextPlayer.hand = [MONSTER('4'), MONSTER('6')];
   nextSock.clear();
   nextSock.fire('pickUp');
-  const errs = nextSock.events('error');
-  assert.ok(errs.length >= 1, '有牌可出时收牌应被拒');
-  assert.strictEqual(errs[errs.length - 1].code, 'MUST_PLAY', '应为业务错误 MUST_PLAY');
-  assert.ok(
-    !errs.some((e) => e.code === 'ERROR' || e.code === 'INTERNAL'),
-    '不得出现内部异常错误码（topCard=null 时抛 TypeError 的老路径）'
-  );
-  assert.strictEqual(room.currentPlayerId, nextPid, '被拒后仍是该玩家回合');
-  assert.strictEqual(room.tablePile.length, 1, '被拒后桌面不变');
 
-  // ② 手牌打空后收牌：应成功，且桌面那张 A 进入败牌堆、本轮重开（GDD §6.1）
-  nextPlayer.hand = [];
-  if (room.drawPile.length === 0) room.drawPile = [MONSTER('K'), MONSTER('K'), MONSTER('K'), MONSTER('K'), MONSTER('K')];
-  nextSock.clear();
-  nextSock.fire('pickUp');
-
-  assert.deepStrictEqual(nextSock.events('error'), [], '无牌可出时收牌不应报错');
+  assert.deepStrictEqual(nextSock.events('error'), [], '主动收牌不应报任何错（尤其不得是 INTERNAL）');
   assert.ok(nextPlayer.penaltyPile.some((c) => c.id === a.id), '桌面上那张 A 应进入收牌者败牌堆');
   assert.strictEqual(room.tablePile.length, 0, '桌面清空');
   assert.strictEqual(room.topCard, null, '门槛仍为空');
   assert.strictEqual(room.currentPlayerId, nextPid, '收牌者成为新一轮先出者');
   assert.ok(nextSock.last('yourTurn'), '收牌后应重新下发 yourTurn');
   assert.strictEqual(nextSock.last('yourTurn').legalMoves.opening, true, '新一轮仍是开轮');
+
+  // ② 桌面已空，再收一次必须被拒 —— 否则「收 0 张 → 补满 5 张 → 还是先手」能无限刷手牌。
+  nextSock.clear();
+  nextSock.fire('pickUp');
+  assert.strictEqual(nextSock.last('error').code, 'NOTHING_TO_PICK', '空桌面收牌必须是业务错误');
+  assert.ok(
+    !nextSock.events('error').some((e) => e.code === 'ERROR' || e.code === 'INTERNAL'),
+    '不得出现内部异常错误码（topCard=null 时抛 TypeError 的老路径）'
+  );
 });
