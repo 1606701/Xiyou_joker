@@ -131,6 +131,7 @@ CDP 注入 `Object.defineProperty(window,'sessionStorage',{get(){throw new DOMEx
    实测（4 张牌、与 class 切换同帧读取）：`0.964638 / 0.926383 / 0.866008 / 0.773617` —— 四张各不相同，正说明它们处在动画的不同进度；同帧 `getAnimations()` 四张全是 `state:"running", name:"dealIn"`。用 `MutationObserver` 在 class 变更同一刻由浏览器自采样，`t=0` 时 `op="0"`、`cls="card has-art disabled enter"`。
    等 `Promise.all(anims.finished)` + `sleep(600)` 后：四张全部 `0.72`（±0.01）。
    结论：这不是「样式没生效」，是 CSS 层叠的正常行为 —— 任何早于动画结束的读数都落在 0↔1 之间，判定必须等动画结束。
+   **注意区分两层，别把这条纪律套到静态断言上**：动画中间帧只影响运行时的 `getComputedStyle` 读数；前端静态断言（场景 38b）读的是 `public/style.css` 的**源码文本**，用正则提取 `.hand .card.disabled` 的声明值，不经过渲染，不存在中间帧，也不需要等待任何东西。`dbc4322` 删除的是与场景 38b **重复的等价断言**（同一 CSS 声明挂两道闸门），与 `dealIn` 动画无关。
 3. **清理脏 `localStorage` 必须在所有 probe 撤销并 reload 之后做。**
    若在模拟对象仍生效时执行 `removeItem`，它会跟着抛，清理静默失败，前一场景写的 `night` 残留，导致「reload 应回落默认」这类**附带断言**被脏数据坑掉——表面看像产品 bug，其实是装置顺序错了。
    实测取证：B 场景 `清理前={"xyj.fs":"99","xyj.theme":"night"} → 清理后={} | 清理语句是否抛=否`。修好顺序后 B/C 的 `reload` 均读到 `light/1`。
