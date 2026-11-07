@@ -126,10 +126,12 @@ CDP 注入 `Object.defineProperty(window,'sessionStorage',{get(){throw new DOMEx
 1. **`node:vm` 的 contextify 不转发 accessor，只转发数据属性。**
    `Object.defineProperty(sandbox,'sessionStorage',{get(){throw}})` 在 vm 内等价于「属性不存在」（`typeof` 返回 `"undefined"`，取值报 `is not defined`）。要模拟「取属性即抛」，必须在 vm 内部 `Object.defineProperty(globalThis,...)`。
    反过来，sandbox 上的**普通对象**（方法内部抛）是会被正常转发的——所以「方法抛」用 `sandbox.sessionStorage = {...}` 有效，「getter 抛」必须用 vm 内部定义。
-2. **`opacity` 读数要等入场动画结束，不只是等 transition。**
-   `.card` 有 `transition: ... opacity .15s`，`.hand .card.enter` 还有 `animation: dealIn .26s`。**动画的 opacity 会覆盖 `.disabled{opacity:.72}` 这条普通声明**，所以入场动画跑完之前，`.disabled` 的值根本不可见。
+2. **`opacity` 读数要等入场动画结束。**
+   `.hand .card` 的 transition 是 `transform .16s, box-shadow .16s, border-color .16s`（`public/style.css:728~731`）——**不含 opacity**。带 `opacity .15s` 的是 `:178` 的 **`.btn`**，与手牌无关，别把两者混为一谈（本条曾误写成 `.card` 有 opacity transition，已更正）。
+   真正来源是 `:749` 的 `.hand .card.enter { animation: dealIn .26s cubic-bezier(.22,.61,.36,1) backwards }` 与 `:1035~1038` 的 `@keyframes dealIn { from { opacity:0 } to { opacity:1 } }`：**动画运行期内，animation 来源的 opacity 优先级高于 `.disabled{opacity:.72}` 这条普通声明**，所以动画跑完之前 `.disabled` 的值根本不可见。
    实测（4 张牌、与 class 切换同帧读取）：`0.964638 / 0.926383 / 0.866008 / 0.773617` —— 四张各不相同，正说明它们处在动画的不同进度；同帧 `getAnimations()` 四张全是 `state:"running", name:"dealIn"`。用 `MutationObserver` 在 class 变更同一刻由浏览器自采样，`t=0` 时 `op="0"`、`cls="card has-art disabled enter"`。
    等 `Promise.all(anims.finished)` + `sleep(600)` 后：四张全部 `0.72`（±0.01）。
+   `fill` 是 `backwards` 而不是 `both`：动画一结束动画值即被丢弃，`.disabled{.72}` 直接接管，所以运行时读数是精确的 `"0.72"` 而非 `0.7199`。也正因为 `.card` 没有 opacity 的 transition，这个接管是**瞬跳**而非渐变——观感上是「牌落定的那一刻淡下去」。
    结论：这不是「样式没生效」，是 CSS 层叠的正常行为 —— 任何早于动画结束的读数都落在 0↔1 之间，判定必须等动画结束。
    **注意区分两层，别把这条纪律套到静态断言上**：动画中间帧只影响运行时的 `getComputedStyle` 读数；前端静态断言（场景 38b）读的是 `public/style.css` 的**源码文本**，用正则提取 `.hand .card.disabled` 的声明值，不经过渲染，不存在中间帧，也不需要等待任何东西。`dbc4322` 删除的是与场景 38b **重复的等价断言**（同一 CSS 声明挂两道闸门），与 `dealIn` 动画无关。
 3. **清理脏 `localStorage` 必须在所有 probe 撤销并 reload 之后做。**
