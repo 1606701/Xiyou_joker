@@ -126,12 +126,18 @@ CDP 注入 `Object.defineProperty(window,'sessionStorage',{get(){throw new DOMEx
 1. **`node:vm` 的 contextify 不转发 accessor，只转发数据属性。**
    `Object.defineProperty(sandbox,'sessionStorage',{get(){throw}})` 在 vm 内等价于「属性不存在」（`typeof` 返回 `"undefined"`，取值报 `is not defined`）。要模拟「取属性即抛」，必须在 vm 内部 `Object.defineProperty(globalThis,...)`。
    反过来，sandbox 上的**普通对象**（方法内部抛）是会被正常转发的——所以「方法抛」用 `sandbox.sessionStorage = {...}` 有效，「getter 抛」必须用 vm 内部定义。
-2. **`opacity` 读数要等过渡结束。**
-   `.card` 有 `transition: ... opacity .15s`，`.hand .card.enter` 还有 `animation: dealIn .26s`。在加 `disabled` 类的同一帧读 `getComputedStyle` 会拿到 `0.989931` 这类中间帧。判定前等待 ≥600ms 或 `Promise.all(el.getAnimations().map(a=>a.finished))`。
+2. **`opacity` 读数要等入场动画结束，不只是等 transition。**
+   `.card` 有 `transition: ... opacity .15s`，`.hand .card.enter` 还有 `animation: dealIn .26s`。**动画的 opacity 会覆盖 `.disabled{opacity:.72}` 这条普通声明**，所以入场动画跑完之前，`.disabled` 的值根本不可见。
+   实测（4 张牌、与 class 切换同帧读取）：`0.964638 / 0.926383 / 0.866008 / 0.773617` —— 四张各不相同，正说明它们处在动画的不同进度；同帧 `getAnimations()` 四张全是 `state:"running", name:"dealIn"`。用 `MutationObserver` 在 class 变更同一刻由浏览器自采样，`t=0` 时 `op="0"`、`cls="card has-art disabled enter"`。
+   等 `Promise.all(anims.finished)` + `sleep(600)` 后：四张全部 `0.72`（±0.01）。
+   结论：这不是「样式没生效」，是 CSS 层叠的正常行为 —— 任何早于动画结束的读数都落在 0↔1 之间，判定必须等动画结束。
 3. **清理脏 `localStorage` 必须在所有 probe 撤销并 reload 之后做。**
    若在模拟对象仍生效时执行 `removeItem`，它会跟着抛，清理静默失败，前一场景写的 `night` 残留，导致「reload 应回落默认」这类**附带断言**被脏数据坑掉——表面看像产品 bug，其实是装置顺序错了。
+   实测取证：B 场景 `清理前={"xyj.fs":"99","xyj.theme":"night"} → 清理后={} | 清理语句是否抛=否`。修好顺序后 B/C 的 `reload` 均读到 `light/1`。
 4. **跨 vm realm 不要用 `deepStrictEqual` 比较对象**（原型不同会误报）。逐字段 `strictEqual`。
 5. **反向变异前先校验目标串命中数。** 命中 0 处等于没变异，会得出「没红所以用例不行」的错误结论。
+6. **截图要标清「模拟态」还是「真实态」。**
+   `not-my-turn.png` / `not-my-turn-v2.png` 是第 5 项的 **DOM 模拟态**（提示条被切成「等待 悟净·AI 出牌…」，但 `handMeta` 仍是真实态的「轮到你」），两者不自洽是模拟造成的，**不是产品文案矛盾**。真实态看 `not-my-turn-real-v2.png`：提示「等待 悟能 出牌…」+ handMeta「手牌 4 张」，自洽。看图的人很容易被这组图误导，报告里必须写明。
 
 ## 五、未覆盖 / 后续
 
