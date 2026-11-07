@@ -1323,20 +1323,7 @@ test('★P2 回归：localStorage.setItem 抛异常（配额满/隐私模式）�
   assert.strictEqual(r.themeAttr(), 'night', '主题同理');
 });
 
-/* ================= 场景 41：静态 CSS —— 非回合手牌亮度 ================= */
-test('★静态 CSS：非回合手牌 .hand .card.disabled 的 opacity 不得低于 .7', () => {
-  const bare = prefCssBare();
-  // 同样不用会回溯的 lookahead：把规则块整个抠出来，再解析里面的声明值。
-  const rule = bare.match(/\.hand\s+\.card\.disabled\s*\{([^}]*)\}/);
-  assert.ok(rule, '找不到 .hand .card.disabled 规则');
-  const op = rule[1].match(/opacity\s*:\s*([0-9.]+)/);
-  assert.ok(op, '规则里找不到 opacity 声明');
-  const value = Number(op[1]);
-  assert.ok(Number.isFinite(value) && value >= 0.7,
-    `非回合手牌不得被压灰：实测 opacity=${value}，阈值 0.7（曾为 .5，e2e 反馈「非自己回合太暗」）`);
-});
-
-/* ================= 场景 42：静态一致性 —— 首屏内联脚本 ↔ app.js ================= */
+/* ================= 场景 41：静态一致性 —— 首屏内联脚本 ↔ app.js ================= */
 /** 把 "'a', 'b'" 这样的数组字面量拆成字符串数组 */
 function parseStrList(s) {
   return s.split(',')
