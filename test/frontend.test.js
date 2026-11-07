@@ -157,6 +157,12 @@ function click(el, patch) {
  *   noLocalStorage 故意不注入 localStorage，覆盖 app.js 的 typeof 存在性守卫
  *   throwOnSet     localStorage 存在、但 setItem 抛 QuotaExceededError（配额满/隐私模式），
  *                  覆盖 app.js prefWrite 的 catch 分支：落盘失败只该影响「下次记不记得」
+ *   session        整体替换 sessionStorage 对象（默认是 Map 实现）。用于让某个方法抛
+ *                  SecurityError，模拟「站点存储被整体禁用」。
+ *   sessionMap     共享一份 sessionStorage 底层 Map，用于「刷新后自动 rejoin」断言。
+ *   sessionGetterThrows 更真实的禁用模式：**访问 sessionStorage 属性本身就抛** SecurityError。
+ *                  注意宿主的 sandbox 上放 accessor 再 contextify 不会转发（等价于属性不存在），
+ *                  所以这种模式必须在 vm 内部对 globalThis 定义（见 makeRig 里 createContext 之后）。
  */
 function makeRig(opts = {}) {
   const els = new Map();
@@ -214,6 +220,21 @@ function makeRig(opts = {}) {
     clear: () => { storeMap.clear(); },
   };
 
+  /* ---- sessionStorage：会话凭证（roomCode / playerId / rejoinToken） ----
+   * 默认 Map 实现；opts.session 可整体替换，用来让 getItem/setItem/removeItem/clear
+   * 单独抛 SecurityError（站点存储被整体禁用时，连读属性都会抛）。
+   * **绝不用 Storage.prototype 覆盖来模拟** —— localStorage 与 sessionStorage 共用原型，
+   * 那样会连带打掉另一端（真浏览器验收被这个坑过一次）。这里始终是独立普通对象。
+   */
+  const sessMap = opts.sessionMap instanceof Map ? opts.sessionMap : new Map();
+  const sessionStorage = opts.session || {
+    __map: sessMap,
+    getItem: (k) => (sessMap.has(k) ? sessMap.get(k) : null),
+    setItem: (k, v) => { sessMap.set(k, String(v)); },
+    removeItem: (k) => { sessMap.delete(k); },
+    clear: () => sessMap.clear(),
+  };
+
   const sandbox = {
     console: {
       log: () => {},
@@ -224,15 +245,6 @@ function makeRig(opts = {}) {
     clearTimeout: timers ? timers.clearTimeout : clearTimeout,
     Promise, Map, Set, JSON, String, Object, Array, Math, Date,
     location: { host: 'localhost:3311' },
-    sessionStorage: (() => {
-      const m = new Map();
-      return {
-        getItem: (k) => (m.has(k) ? m.get(k) : null),
-        setItem: (k, v) => m.set(k, String(v)),
-        removeItem: (k) => m.delete(k),
-        clear: () => m.clear(),
-      };
-    })(),
     fetch: async () => ({ ok: true, json: async () => ({ names: { 4: '小妖' }, rankShow: { SJ: '小王' } }) }),
     document: {
       documentElement,
@@ -245,6 +257,9 @@ function makeRig(opts = {}) {
   // 而不是被 typeof 守卫静默跳过。noLocalStorage 用例才故意不注入。
   // 必须在 vm.createContext 之前挂上，否则沙箱里 typeof localStorage 永远是 undefined。
   if (!opts.noLocalStorage) sandbox.localStorage = localStorage;
+  // sessionStorage 默认作为普通数据属性注入 —— contextify 会正常转发数据属性。
+  // sessionGetterThrows 时故意不在这里放，改在 vm 内 defineProperty（见 createContext 之后）。
+  if (!opts.sessionGetterThrows) sandbox.sessionStorage = sessionStorage;
   // 只有验证「减弱动效」的用例才注入 window：默认环境没有 window，
   // app.js 必须自己把「拿不到 matchMedia」当成「没有偏好」，否则真机上会静默丢特效。
   if (opts.reducedMotion) {
@@ -271,6 +286,18 @@ function makeRig(opts = {}) {
   };
 
   vm.createContext(sandbox);
+  // 「访问 sessionStorage 属性本身就抛」= 真实浏览器禁用站点存储时的行为。
+  // 坑：把 accessor 放在宿主的 sandbox 对象上再 contextify **不会转发**，
+  // vm 内只会看到「属性不存在」（typeof === 'undefined'），模拟不出 getter 抛。
+  // 正确做法：在 vm 内部对 globalThis 定义 accessor —— 已声明且 getter 抛时，typeof 会传播异常。
+  if (opts.sessionGetterThrows) {
+    vm.runInContext(
+      "Object.defineProperty(globalThis, 'sessionStorage', {" +
+      "  configurable: true," +
+      "  get() { const e = new Error('blocked'); e.name = 'SecurityError'; throw e; }" +
+      "});",
+      sandbox);
+  }
   vm.runInContext(SRC, sandbox, { filename: APP });
   sandbox.__domReady(); // 等价于 DOMContentLoaded：bindEvents + loadCardNames + connectSocket
 
@@ -284,6 +311,11 @@ function makeRig(opts = {}) {
     // storage 是 localStorage 的读写 API（__map 是底层 Map，可传给另一个 rig 共享）。
     root: documentElement,
     storage: localStorage,
+    sessionStorage,
+    sessionMap: sessMap,
+    // 直接检查 vm 内注入是否真的生效（例如 getter 抛时 typeof 应抛异常），
+    // 用来排除「用例因属性不存在而变红/变绿」的假覆盖。
+    probe: (code) => vm.runInContext(code, sandbox, { filename: 'probe.js' }),
     themeAttr: () => rootAttrs['data-theme'],
     fsVar: () => rootVars['--fs'],
     metaColor: () => getEl('meta[name="theme-color"]').__attrs.content,
@@ -1364,4 +1396,148 @@ test('★静态一致性：index.html 首屏内联脚本的默认 theme/fs 与�
     '首屏内联脚本的 theme 白名单必须与 PREF_THEMES 一致');
   assert.deepStrictEqual(parseStrList(inlineFs[1]), parseStrList(appFs[1]),
     '首屏内联脚本的 fs 白名单必须与 PREF_FS_VALUES 一致（含顺序）');
+});
+
+/* ============================================================
+ * 会话凭证守卫（W5-QA-SESS01）
+ *
+ * 站点存储整体被禁用时，**访问 sessionStorage 属性本身**就会抛 SecurityError。
+ * 致命的不是「丢凭证」，而是异常抛在处理器中间会截断后续逻辑：
+ *   roomJoined 里 setItem 抛 → S.state/showView/renderRoom 全不执行 → 进了房间却停在首页
+ *   roomClosed 里 clear() 抛 → toast 与 resetToHome 不执行 → 卡在已解散的房间
+ *   resetToHome 里 removeItem 抛 → showView('view-home') 不执行 → 退不出房间
+ *
+ * 修前证据：FE_APP=<git HEAD 版 app.js>（10 处裸调）；
+ * 修后：当前 public/app.js（sessGet/sessSet/sessRemove/sessClear 内部 try/catch）。
+ * ============================================================ */
+
+/** 构造「站点存储被禁用」时浏览器抛的异常（name=SecurityError） */
+function blockedStorageError() {
+  const e = new Error('blocked');
+  e.name = 'SecurityError';
+  return e;
+}
+
+/** 构造一个指定方法抛 SecurityError 的 sessionStorage stub（其余方法正常） */
+function blockedSession(method) {
+  const base = {
+    getItem: () => null,
+    setItem: () => {},
+    removeItem: () => {},
+    clear: () => {},
+  };
+  base[method] = () => { throw blockedStorageError(); };
+  return base;
+}
+
+/* ================= 场景 42：roomJoined 的 setItem 抛 ================= */
+test('★会话守卫：roomJoined 的 setItem 抛异常时不得截断视图切换（否则进了房间停在首页）', () => {
+  const r = makeRig({ session: blockedSession('setItem') });
+  const state = stBase('waiting');
+  assert.doesNotThrow(
+    () => r.socket.fire('roomJoined', { roomCode: '888', youId: 'p0', rejoinToken: 'tk-1', state }),
+    'setItem 抛异常不得穿透 socket 事件处理器');
+  // S 是沙箱内部状态，用渲染副作用间接断言「S.state 已赋值 + showView/renderRoom 执行过」
+  assert.ok(r.visible('view-room'), '必须已切到房间面板（showView 不能被截断）');
+  assert.ok(r.hidden('view-home'), '首页必须被隐藏');
+  assert.ok(String(r.getEl('#roomInfo').textContent).includes('888'),
+    `#roomInfo 应含房间码 888（证明 S.state 已赋值且 renderRoom 跑完）：实际「${r.getEl('#roomInfo').textContent}」`);
+  assert.strictEqual(r.getEl('#playerList').children.length, 3, '玩家列表应渲染出 3 人');
+  // sessSet 内置「只 warn 一次」：roomJoined 连续写 3 个 key 都失败，也只该有一条告警，不刷屏。
+  const sessWarns = r.warnings.filter((w) => w.includes('会话存储不可用'));
+  assert.strictEqual(sessWarns.length, 1, `setItem 失败应只 warn 一次（不刷屏），实际 ${sessWarns.length} 次`);
+});
+
+/* ================= 场景 43：roomClosed 的 clear() 抛 ================= */
+test('★会话守卫：roomClosed 的 clear() 抛异常时仍要弹「房间已解散」并回首页', () => {
+  const r = makeRig({ session: blockedSession('clear') });
+  assert.doesNotThrow(() => r.socket.fire('roomClosed'),
+    'clear() 抛异常不得把 toast 与 resetToHome 截断');
+  assert.strictEqual(String(r.getEl('#toast').textContent), '房间已解散', 'toast 必须显示「房间已解散」');
+  assert.ok(!r.getEl('#toast').classList.contains('hidden'), 'toast 不得处于 hidden');
+  assert.ok(r.visible('view-home'), '必须回到首页');
+  assert.ok(r.hidden('view-room'), '房间面板应隐藏');
+});
+
+/* ================= 场景 44：resetToHome 的 removeItem 抛 ================= */
+test('★会话守卫：resetToHome 的 removeItem 抛异常时仍要切回首页', () => {
+  const r = makeRig({ session: blockedSession('removeItem') });
+  // 前置：模拟「当前停在房间视图」，再走 BAD_TOKEN + S.state 为空的自然路径
+  r.getEl('#view-home').classList.add('hidden');
+  r.getEl('#view-room').classList.remove('hidden');
+  assert.doesNotThrow(() => r.socket.fire('error', { code: 'BAD_TOKEN' }),
+    'removeItem 抛异常不得把 showView(view-home) 截断');
+  assert.ok(r.visible('view-home'), '必须切回首页（否则退不出房间）');
+  assert.ok(r.hidden('view-room'), '房间面板应隐藏');
+});
+
+/* ================= 场景 45：存储正常时行为不变（防回归） ================= */
+test('★会话凭证正常路径：三凭证写入 / 刷新后自动 rejoin / 缺 token 时发空串', () => {
+  // ① roomJoined 写入三个 key
+  const r1 = makeRig();
+  r1.socket.fire('roomJoined', { roomCode: '888', youId: 'p0', rejoinToken: 'tk-1', state: stBase('waiting') });
+  assert.strictEqual(r1.sessionStorage.getItem('roomCode'), '888', 'roomCode 应写入');
+  assert.strictEqual(r1.sessionStorage.getItem('playerId'), 'p0', 'playerId 应写入');
+  assert.strictEqual(r1.sessionStorage.getItem('rejoinToken'), 'tk-1', 'rejoinToken 应写入');
+
+  // ② 共享同一份 sessionStorage 底层 Map = 刷新页面；connect 时自动 rejoin
+  const r2 = makeRig({ sessionMap: r1.sessionMap });
+  r2.socket.fire('connect');
+  const rejoin = r2.socket.emitted.find((e) => e.evt === 'rejoin');
+  assert.ok(rejoin, '刷新后 connect 应发出 rejoin');
+  // payload 是沙箱 realm 里创建的对象：跨 realm 的 deepStrictEqual 会比原型而误报，
+  // 这里逐字段比较（字符串 primitive 跨 realm 按值相等）。
+  assert.strictEqual(rejoin.payload.roomCode, '888', 'rejoin 应带 roomCode');
+  assert.strictEqual(rejoin.payload.playerId, 'p0', 'rejoin 应带 playerId');
+  assert.strictEqual(rejoin.payload.rejoinToken, 'tk-1', 'rejoin 应带 rejoinToken');
+
+  // ③ 旧版本/首次进房：有 roomCode+playerId 但没有 rejoinToken → 必须发 '' 而不是 undefined
+  const m = new Map([['roomCode', '999'], ['playerId', 'p1']]);
+  const r3 = makeRig({ sessionMap: m });
+  r3.socket.fire('connect');
+  const rejoin3 = r3.socket.emitted.find((e) => e.evt === 'rejoin');
+  assert.ok(rejoin3, '有 roomCode+playerId 时应 rejoin');
+  assert.strictEqual(rejoin3.payload.rejoinToken, '', "缺 token 时必须发空串（对应 rejoinToken || ''）");
+});
+
+/* ================= 场景 46：真实禁用模式 —— 属性 getter 抛 ================= */
+test('★会话守卫：sessionStorage 属性 getter 抛（真实禁用模式）时三条路径都不得截断', () => {
+  // 前置校验：注入必须真的生效。这是 team-lead / engineering-lead 特别强调的坑 ——
+  // 把 accessor 放在宿主 sandbox 上再 contextify **不会转发**，vm 内只会看到「属性不存在」，
+  // 那种情况下用例也会红/绿，但红/绿的原因不对，等于假覆盖。
+  // 用 probe 直接进 vm 验证：直接取值必须抛 SecurityError，typeof 也必须传播异常。
+  const probeRig = makeRig({ sessionGetterThrows: true });
+  assert.throws(() => probeRig.probe('sessionStorage.getItem("x")'),
+    (e) => !!e && e.name === 'SecurityError',
+    '前置校验：getter 必须真的抛 SecurityError（不是「属性不存在」的 ReferenceError）');
+  assert.throws(() => probeRig.probe('typeof sessionStorage'),
+    (e) => !!e && e.name === 'SecurityError',
+    '前置校验：typeof「已声明且 getter 抛」的属性必须传播异常（app.js helper 的 typeof 检查就靠它被 catch）');
+
+  // ① roomJoined：setItem 读属性就抛，不能截断 showView/renderRoom
+  const r1 = makeRig({ sessionGetterThrows: true });
+  assert.doesNotThrow(() => r1.socket.fire('roomJoined', {
+    roomCode: '888', youId: 'p0', rejoinToken: 'tk-1', state: stBase('waiting'),
+  }), 'roomJoined 在属性 getter 抛时不得把异常穿透出去');
+  assert.ok(r1.visible('view-room'), '必须已切到房间面板（showView 不能被截断）');
+  assert.ok(r1.hidden('view-home'), '首页必须隐藏');
+  assert.ok(String(r1.getEl('#roomInfo').textContent).includes('888'),
+    `#roomInfo 应含 888（证明 S.state 已赋值且 renderRoom 跑完）：实际「${r1.getEl('#roomInfo').textContent}」`);
+  assert.strictEqual(r1.getEl('#playerList').children.length, 3, '玩家列表应渲染出 3 人');
+
+  // ② roomClosed：clear() 读属性就抛，toast 与 resetToHome 仍要执行
+  const r2 = makeRig({ sessionGetterThrows: true });
+  assert.doesNotThrow(() => r2.socket.fire('roomClosed'),
+    'roomClosed 在属性 getter 抛时不得把 toast/resetToHome 截断');
+  assert.strictEqual(String(r2.getEl('#toast').textContent), '房间已解散', 'toast 必须显示「房间已解散」');
+  assert.ok(r2.visible('view-home'), '必须回到首页');
+
+  // ③ resetToHome（BAD_TOKEN 且 S.state 为空）
+  const r3 = makeRig({ sessionGetterThrows: true });
+  r3.getEl('#view-home').classList.add('hidden');
+  r3.getEl('#view-room').classList.remove('hidden');
+  assert.doesNotThrow(() => r3.socket.fire('error', { code: 'BAD_TOKEN' }),
+    'BAD_TOKEN 在属性 getter 抛时不得把 showView(view-home) 截断');
+  assert.ok(r3.visible('view-home'), '必须切回首页');
+  assert.ok(r3.hidden('view-room'), '房间面板应隐藏');
 });

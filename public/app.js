@@ -59,6 +59,48 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+/* ---------- 会话凭证（sessionStorage 可能整体不可用） ---------- */
+// 站点存储被整体禁用时，连读取 sessionStorage 这个属性都会抛 SecurityError。
+// 这 4 个 helper 的唯一职责：把「存不了凭证」降级成「刷新后不回座」，
+// 绝不能让它把 roomJoined / roomClosed / resetToHome 里的后续逻辑一起截断
+// —— 那会让用户明明进了房间却停在首页，看起来像卡死。
+let sessWarned = false;
+
+function sessGet(key) {
+  try {
+    if (typeof sessionStorage === 'undefined') return null;
+    return sessionStorage.getItem(key);
+  } catch (e) { return null; }
+}
+
+function sessSet(key, value) {
+  try {
+    if (typeof sessionStorage === 'undefined') throw new Error('no sessionStorage');
+    sessionStorage.setItem(key, value);
+    return true;
+  } catch (e) {
+    if (!sessWarned) {
+      sessWarned = true;
+      console.warn('[西游斗牌] 会话存储不可用，刷新后将无法自动回座（不影响当前对局）：', e && e.name);
+    }
+    return false;
+  }
+}
+
+function sessRemove(key) {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    sessionStorage.removeItem(key);
+  } catch (e) { /* 存储不可用 = 本来就没有凭证要清 */ }
+}
+
+function sessClear() {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    sessionStorage.clear();
+  } catch (e) { /* 同上 */ }
+}
+
 let toastTimer = null;
 /**
  * @param {string} msg
@@ -113,9 +155,9 @@ function connectSocket() {
   S.socket.on('connect', () => {
     $('#connBanner').classList.add('hidden');
     // 刷新页面 / 断线恢复：尝试回原座位（需 roomCode + playerId + 服务端签发的 rejoinToken）
-    const roomCode = sessionStorage.getItem('roomCode');
-    const playerId = sessionStorage.getItem('playerId');
-    const rejoinToken = sessionStorage.getItem('rejoinToken');
+    const roomCode = sessGet('roomCode');
+    const playerId = sessGet('playerId');
+    const rejoinToken = sessGet('rejoinToken');
     if (roomCode && playerId) {
       S.socket.emit('rejoin', { roomCode, playerId, rejoinToken: rejoinToken || '' });
     }
@@ -126,9 +168,9 @@ function connectSocket() {
   });
 
   S.socket.on('roomJoined', ({ roomCode, youId, state, rejoinToken }) => {
-    sessionStorage.setItem('roomCode', roomCode);
-    sessionStorage.setItem('playerId', youId);
-    if (rejoinToken) sessionStorage.setItem('rejoinToken', rejoinToken);
+    sessSet('roomCode', roomCode);
+    sessSet('playerId', youId);
+    if (rejoinToken) sessSet('rejoinToken', rejoinToken);
     S.state = state;
     S.myTurn = null;
     S.selectedIds = [];
@@ -242,7 +284,7 @@ function connectSocket() {
   });
 
   S.socket.on('roomClosed', () => {
-    sessionStorage.clear();
+    sessClear();
     toast('房间已解散');
     resetToHome();
   });
@@ -251,9 +293,9 @@ function connectSocket() {
 /* ---------- 房间视图 ---------- */
 function resetToHome() {
   S.state = null; S.myTurn = null; S.selectedIds = [];
-  sessionStorage.removeItem('roomCode');
-  sessionStorage.removeItem('playerId');
-  sessionStorage.removeItem('rejoinToken');
+  sessRemove('roomCode');
+  sessRemove('playerId');
+  sessRemove('rejoinToken');
   showView('view-home');
 }
 
