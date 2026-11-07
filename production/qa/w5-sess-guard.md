@@ -2,7 +2,7 @@
 
 > 范围：`public/app.js` 的 `sessionStorage` 访问加固（任务 `W5-ENG-SESS01` / `W5-QA-SESS01` / `W5-E2E-SESS01`）
 > 基线：HEAD `dbc4322`（`public/app.js` md5 `62b86a9ca2dab5f478bdf6b23e21ef39`）
-> 交付：`public/app.js` md5 `ccfc13cb81e0396b7f295a9aa9c5d0f4` / `test/frontend.test.js` md5 `f6561d8b02fbf59d719fda213908b31c`
+> 交付：`public/app.js` md5 `ccfc13cb81e0396b7f295a9aa9c5d0f4`（commit `315bfbd`）/ `test/frontend.test.js` md5 `f6561d8b02fbf59d719fda213908b31c`（commit `dbee0a7`）
 > 判定：**PASS**
 
 ## 一、为什么修
@@ -143,6 +143,11 @@ CDP 注入 `Object.defineProperty(window,'sessionStorage',{get(){throw new DOMEx
 5. **反向变异前先校验目标串命中数。** 命中 0 处等于没变异，会得出「没红所以用例不行」的错误结论。
 6. **截图要标清「模拟态」还是「真实态」。**
    `not-my-turn.png` / `not-my-turn-v2.png` 是第 5 项的 **DOM 模拟态**（提示条被切成「等待 悟净·AI 出牌…」，但 `handMeta` 仍是真实态的「轮到你」），两者不自洽是模拟造成的，**不是产品文案矛盾**。真实态看 `not-my-turn-real-v2.png`：提示「等待 悟能 出牌…」+ handMeta「手牌 4 张」，自洽。看图的人很容易被这组图误导，报告里必须写明。
+7. **报文件指纹必须现场读，并同时给出 `git status` 与 `HEAD`。**
+   本轮三方各自报过 `c060bded…` 与 `f6561d8b…` 两个值，**每一个都是「读数当时」的真实快照，但被引用时都已过期**，方向还正好相反。根因不是谁粗心，而是「报 md5 不带时刻」这个方法本身不可靠：读者无法判断它对应哪个版本。
+   附带的机制事实：e2e 的 `verify.js` 指纹**只覆盖 `public/` 三个文件**，所以「要不要重跑真机」看的是 `public/` 有没有变，改 `test/`、改文档都不触发重跑 —— 但改 `style.css` 一定触发。
+8. **引用 commit hash 前先看该 commit 的 diff。**
+   本轮出现过「动画中间帧可能是删断言的原因」这类结论，实际 `dbc4322` 删的是重复用例，与动画无关。看 diff 是一秒钟的事，不看就会把错误因果写进文档。
 
 ## 五、未覆盖 / 后续
 
