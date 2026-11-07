@@ -3,9 +3,31 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <meta name="theme-color" content="#0B1D18" />
+  <meta name="theme-color" content="#F1EDE4" />
   <title>西游斗牌</title>
   <link rel="stylesheet" href="style.css" />
+  <script>
+    /* 主题与字号必须在首屏之前落地，否则用户会先看到一闪而过的夜局。
+       默认值与白名单跟 app.js 的 PREF_DEFAULTS / PREF_THEMES / PREF_FS_VALUES 是同一份，
+       改任何一处都要两边一起改（见 app.js 里的说明）。
+       读不到 localStorage（隐私模式）就用默认，不报错、不阻断渲染。 */
+    (function () {
+      var theme = 'light', fs = '1';
+      try {
+        theme = localStorage.getItem('xyj.theme') || 'light';
+        fs = localStorage.getItem('xyj.fs') || '1';
+      } catch (e) { /* 无 storage 时用默认 */ }
+      // 只校验 theme 不校验 fs 的话，脏值会在首屏闪出 99 倍字号，
+      // 等 DOMContentLoaded 里 applyPrefs() 才修正 —— 首屏防闪烁就白做了。
+      if (theme !== 'light' && theme !== 'night') theme = 'light';
+      if (['0.92', '1', '1.18', '1.36'].indexOf(fs) < 0) fs = '1';
+      var root = document.documentElement;
+      root.setAttribute('data-theme', theme);
+      root.style.setProperty('--fs', fs);
+      var mc = document.querySelector('meta[name="theme-color"]');
+      if (mc) mc.setAttribute('content', theme === 'night' ? '#0B1D18' : '#F1EDE4');
+    })();
+  </script>
 </head>
 <body>
   <div id="app">
@@ -16,6 +38,7 @@
         <div id="roomInfo" class="hidden"></div>
         <button id="btnBgm" class="mute-btn" type="button" aria-label="背景音乐开关" title="背景音乐开关" aria-pressed="false">乐</button>
         <button id="btnMute" class="mute-btn" type="button" aria-label="音效开关" title="音效开关">音</button>
+        <button id="btnSettings" class="mute-btn" type="button" aria-label="显示设置" title="显示设置（字号 / 主题）">设</button>
       </div>
     </header>
 
@@ -132,6 +155,35 @@
 
     <!-- 动效层（出牌飞入 / 收牌飞走） -->
     <div id="fxLayer" class="fx-layer"></div>
+    <!-- ========== 显示设置（字号 / 主题） ========== -->
+    <div id="view-settings" class="overlay hidden">
+      <div class="panel settings-panel">
+        <h2>显示设置</h2>
+
+        <div class="pref-group">
+          <span class="pref-label">字体大小</span>
+          <div class="pref-row" id="fsRow">
+            <button class="btn" type="button" data-fs="0.92">偏小</button>
+            <button class="btn" type="button" data-fs="1">标准</button>
+            <button class="btn" type="button" data-fs="1.18">大</button>
+            <button class="btn" type="button" data-fs="1.36">特大</button>
+          </div>
+          <div class="pref-sample" id="fsSample">轮到你出牌 —— 这行字会跟着倍率变</div>
+        </div>
+
+        <div class="pref-group">
+          <span class="pref-label">主题</span>
+          <div class="pref-row" id="themeRow">
+            <button class="btn" type="button" data-theme-choice="light">明亮</button>
+            <button class="btn" type="button" data-theme-choice="night">夜局</button>
+          </div>
+        </div>
+
+        <p class="pref-note">两项都会记住，下次打开不用再调。等别人出牌时屏幕不会变暗，「轮到你」用暖金提示。</p>
+        <button id="btnCloseSettings" class="btn primary" type="button">好了</button>
+      </div>
+    </div>
+
     <!-- Toast -->
     <div id="toast" class="toast hidden"></div>
     <!-- 重连横幅 -->

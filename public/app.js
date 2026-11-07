@@ -1073,6 +1073,108 @@ function bindEvents() {
   }
 }
 
+/* ---------- 显示偏好：字号 / 主题（2026-11-07 用户反馈） ----------
+ *
+ * 默认值与 index.html 头部那段内联脚本是同一份（那里要在首屏之前落地，避免闪一下夜局）。
+ * **改默认值必须两处一起改**，否则「没存过偏好的人」会在启动脚本和这里看到不同的默认。
+ *
+ * 存储只放两个 key：xyj.theme / xyj.fs。读写一律 try/catch，
+ * 读不到 / 写不进都不能让整页起不来（会话内内存态见下）。
+ */
+const PREF_DEFAULTS = { theme: 'light', fs: '1' };
+const PREF_FS_VALUES = ['0.92', '1', '1.18', '1.36'];
+const PREF_THEMES = ['light', 'night'];
+
+/* 会话内生效值。存在意义：localStorage 不可用（隐私模式 / 禁用站点存储 / 配额满）时，
+   setItem 会直接抛或整个对象不存在；若 applyPrefs 每次都重新从存储读，
+   刚点的值会立刻被回落的默认值冲掉 —— 恰好是「嫌字小」最想调字号的那批用户点了没反应。
+   所以落盘与生效解耦：先写内存，再尝试落盘；落盘失败只影响「下次打开还记不记得」。
+   prefStorageBroken 标记「存储不可信」，之后 currentPrefs 改以内存值为准；
+   存储可用时仍每次读 storage，这样「外部改了偏好，打开面板就同步」依旧成立。 */
+let prefMemory = null;
+let prefStorageBroken = false;
+
+function prefRead(key, fallback) {
+  try {
+    if (typeof localStorage === 'undefined') return fallback;
+    return localStorage.getItem(key) || fallback;
+  } catch (e) { return fallback; }
+}
+function prefWrite(key, value) {
+  const field = key === 'xyj.theme' ? 'theme' : 'fs';
+  // 顺序不能反：setItem 会抛，抛了也得让本次点击在会话内生效。
+  prefMemory = prefMemory || { ...PREF_DEFAULTS };
+  prefMemory[field] = value;
+  try {
+    if (typeof localStorage === 'undefined') { prefStorageBroken = true; return; }
+    localStorage.setItem(key, value);
+    prefStorageBroken = false;
+  } catch (e) {
+    prefStorageBroken = true;
+    /* 落盘失败（配额满 / 隐私模式 / 禁用站点存储）：内存态已生效，只是不记住 */
+  }
+}
+
+function currentPrefs() {
+  let theme, fs;
+  if (prefStorageBroken && prefMemory) {
+    theme = prefMemory.theme;
+    fs = prefMemory.fs;
+  } else {
+    theme = prefRead('xyj.theme', PREF_DEFAULTS.theme);
+    fs = prefRead('xyj.fs', PREF_DEFAULTS.fs);
+  }
+  // 存储可能被旧版本/手工改脏，落回白名单比「信任它然后页面空白」好
+  if (!PREF_THEMES.includes(theme)) theme = PREF_DEFAULTS.theme;
+  if (!PREF_FS_VALUES.includes(fs)) fs = PREF_DEFAULTS.fs;
+  // 记下本次生效值：之后若落盘失败，applyPrefs 还得靠它在会话内继续生效
+  prefMemory = { theme, fs };
+  return { theme, fs };
+}
+
+function applyPrefs() {
+  const { theme, fs } = currentPrefs();
+  const root = typeof document !== 'undefined' ? document.documentElement : null;
+  if (root) {
+    root.setAttribute('data-theme', theme);
+    if (root.style) root.style.setProperty('--fs', fs);
+  }
+  const mc = document.querySelector('meta[name="theme-color"]');
+  // setAttribute 要判存在：极简假 DOM 没有它，而真浏览器一定有。别让它成为测试环境独有的崩点。
+  if (mc && mc.setAttribute) mc.setAttribute('content', theme === 'night' ? '#0B1D18' : '#F1EDE4');
+  // 面板上的选中态跟着实际生效值走（含「存储被改脏后回落」的情况）
+  for (const v of PREF_FS_VALUES) {
+    const b = document.querySelector(`#fsRow .btn[data-fs="${v}"]`);
+    if (b) b.classList.toggle('on', v === fs);
+  }
+  for (const t of PREF_THEMES) {
+    const b = document.querySelector(`#themeRow .btn[data-theme-choice="${t}"]`);
+    if (b) b.classList.toggle('on', t === theme);
+  }
+}
+
+function bindSettings() {
+  const panel = $('#view-settings');
+  const open = $('#btnSettings');
+  if (open) open.addEventListener('click', () => { applyPrefs(); panel.classList.remove('hidden'); });
+  const close = $('#btnCloseSettings');
+  if (close) close.addEventListener('click', () => panel.classList.add('hidden'));
+  // 点遮罩空白处也能关：手机上「好了」按钮不一定在拇指够得到的地方
+  if (panel) {
+    panel.addEventListener('click', (e) => {
+      if (e && e.target === panel) panel.classList.add('hidden');
+    });
+  }
+  for (const v of PREF_FS_VALUES) {
+    const b = document.querySelector(`#fsRow .btn[data-fs="${v}"]`);
+    if (b) b.addEventListener('click', () => { prefWrite('xyj.fs', v); applyPrefs(); });
+  }
+  for (const t of PREF_THEMES) {
+    const b = document.querySelector(`#themeRow .btn[data-theme-choice="${t}"]`);
+    if (b) b.addEventListener('click', () => { prefWrite('xyj.theme', t); applyPrefs(); });
+  }
+}
+
 /* ---------- 启动 ---------- */
 /**
  * 拉取牌面名称（唯一来源 lib/cards.js）。成功后重绘一次，避免出现「先显示点数再变成角色名」的长期状态。
@@ -1096,6 +1198,8 @@ async function loadCardNames() {
 
 document.addEventListener('DOMContentLoaded', () => {
   if (!$('#nickname').value) $('#nickname').value = makeDefaultNickname();
+  applyPrefs();   // 与 index.html 内联脚本同源：它管首屏，这里管「之后每次改设置」
+  bindSettings();
   bindEvents();
   loadCardNames();
   connectSocket();

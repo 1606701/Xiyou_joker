@@ -1,6 +1,16 @@
-/* ===== 西游斗牌 · 夜局牌桌（移动端优先） ===== */
+/* ===== 西游斗牌 · 牌桌（移动端优先）=====
+ * 两套主题共用这一套变量：默认明亮（light），夜局（night）保留 2026-11-07 之前的墨绿配色。
+ * 切换只改 <html data-theme="…">，不改任何规则本身 —— 新写的颜色一律走变量，
+ * 否则明亮主题下会漏一块深色（本次补的 override 清单见文件末尾，别再加第三份硬编码）。
+ *
+ * 字号同理：全文 font-size 一律写成 calc(Npx * var(--fs))，由「设置 → 字体大小」改 --fs。
+ * 不要写死 px，否则那个按钮会对新加的这一块失效。
+ */
 :root {
-  /* 底色：深墨绿，比纯黑柔和，长时间看不累 */
+  /* 字号倍率：1 = 标准。设置面板给 0.92 / 1 / 1.18 / 1.36 四档 */
+  --fs: 1;
+
+  /* 底色：深墨绿，比纯黑柔和，长时间看不累（= night 主题，见文末 light 覆盖） */
   --bg: #0B1D18;
   --bg-2: #0F241E;
   --surface: #16302A;
@@ -75,12 +85,12 @@ html, body {
   gap: 12px;
 }
 #topbar h1 {
-  font-size: 17px;
+  font-size: calc(17px * var(--fs));
   font-weight: 500;
   letter-spacing: 2px;
   color: var(--gold);
 }
-#roomInfo { font-size: 12px; color: var(--muted); }
+#roomInfo { font-size: calc(12px * var(--fs)); color: var(--muted); }
 .top-right { display: flex; align-items: center; gap: 10px; }
 /* 音效开关：24px 圆形，关闭时描边变淡 + 斜线划掉「音」字，不引入图标字体 */
 .mute-btn {
@@ -91,7 +101,7 @@ html, body {
   border: 1px solid var(--line-2);
   background: transparent;
   color: var(--gold);
-  font-size: 12px;
+  font-size: calc(12px * var(--fs));
   line-height: 1;
   display: grid;
   place-items: center;
@@ -126,7 +136,7 @@ html, body {
   padding: 22px 20px;
 }
 .panel h2 {
-  font-size: 15px;
+  font-size: calc(15px * var(--fs));
   font-weight: 500;
   color: var(--text-2);
   margin-bottom: 16px;
@@ -134,13 +144,13 @@ html, body {
 }
 
 .field { display: block; margin-bottom: 14px; }
-.field span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.field span { display: block; font-size: calc(12px * var(--fs)); color: var(--muted); margin-bottom: 6px; }
 
 input[type="text"] {
   width: 100%;
   min-height: var(--tap);
   padding: 0 14px;
-  font-size: 16px;
+  font-size: calc(16px * var(--fs));
   font-family: inherit;
   color: var(--text);
   background: var(--bg-2);
@@ -157,7 +167,7 @@ input[type="text"]::placeholder { color: var(--dim); }
   width: 100%;
   min-height: var(--tap);
   padding: 0 16px;
-  font-size: 15px;
+  font-size: calc(15px * var(--fs));
   font-family: inherit;
   font-weight: 500;
   color: var(--text);
@@ -207,7 +217,7 @@ input[type="text"]::placeholder { color: var(--dim); }
   align-items: center;
   gap: 10px;
   margin: 16px 0 12px;
-  font-size: 12px;
+  font-size: calc(12px * var(--fs));
   color: var(--dim);
 }
 .divider::before, .divider::after {
@@ -229,7 +239,7 @@ input[type="text"]::placeholder { color: var(--dim); }
 .hint {
   text-align: center;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--fs));
   line-height: 1.7;
   max-width: 400px;
 }
@@ -237,9 +247,9 @@ input[type="text"]::placeholder { color: var(--dim); }
 
 /* ===== 房间面板 ===== */
 .room-code-box { text-align: center; padding: 2px 0 10px; }
-.room-code-box .label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+.room-code-box .label { display: block; font-size: calc(12px * var(--fs)); color: var(--muted); margin-bottom: 2px; }
 .code-big {
-  font-size: 34px;
+  font-size: calc(34px * var(--fs));
   font-weight: 500;
   letter-spacing: 10px;
   color: var(--gold);
@@ -265,15 +275,15 @@ input[type="text"]::placeholder { color: var(--dim); }
   border-radius: 50%;
   background: var(--surface-2);
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--fs));
   display: flex;
   align-items: center;
   justify-content: center;
 }
-.player-list .name { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.player-list .name { font-size: calc(14px * var(--fs)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .player-list .badges { display: flex; gap: 6px; flex: 0 0 auto; }
 .badge {
-  font-size: 11px;
+  font-size: calc(11px * var(--fs));
   padding: 3px 8px;
   border-radius: 20px;
   white-space: nowrap;
@@ -289,7 +299,7 @@ input[type="text"]::placeholder { color: var(--dim); }
 /* 「加 AI / 踢 AI」并排：竖排会让房间面板在手机上多出两个整行按钮，离开房间被挤到屏幕外 */
 .actions-row { display: flex; gap: 10px; }
 .actions-row .btn { flex: 1 1 0; width: auto; min-width: 0; }
-.status { text-align: center; color: var(--muted); font-size: 12px; margin-top: 12px; min-height: 18px; }
+.status { text-align: center; color: var(--muted); font-size: calc(12px * var(--fs)); margin-top: 12px; min-height: 18px; }
 
 /* ===== 对局视图 ===== */
 #view-game { padding: 0 12px 4px; gap: 0; }
@@ -300,7 +310,7 @@ input[type="text"]::placeholder { color: var(--dim); }
   justify-content: space-between;
   gap: 8px;
   padding: 2px 4px 8px;
-  font-size: 12px;
+  font-size: calc(12px * var(--fs));
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
@@ -329,7 +339,7 @@ input[type="text"]::placeholder { color: var(--dim); }
   background: var(--surface);
   border: 1px solid var(--line-2);
   color: var(--text-2);
-  font-size: 15px;
+  font-size: calc(15px * var(--fs));
   font-weight: 500;
   display: flex;
   align-items: center;
@@ -350,7 +360,7 @@ input[type="text"]::placeholder { color: var(--dim); }
 
 .seat .sname {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: calc(12px * var(--fs));
   color: var(--text-2);
   white-space: nowrap;
   overflow: hidden;
@@ -359,7 +369,7 @@ input[type="text"]::placeholder { color: var(--dim); }
 .seat.me .sname { color: var(--gold-2); }
 .seat .smeta {
   margin-top: 1px;
-  font-size: 11px;
+  font-size: calc(11px * var(--fs));
   color: var(--muted);
   display: flex;
   align-items: center;
@@ -381,7 +391,7 @@ input[type="text"]::placeholder { color: var(--dim); }
   border-radius: 50%;
   background: var(--gold);
   color: #16241E;
-  font-size: 9px;
+  font-size: calc(9px * var(--fs));
   line-height: 15px;
   text-align: center;
 }
@@ -390,7 +400,7 @@ input[type="text"]::placeholder { color: var(--dim); }
   bottom: -2px;
   left: 50%;
   transform: translateX(-50%);
-  font-size: 11px;
+  font-size: calc(11px * var(--fs));
   color: var(--dim);
 }
 
@@ -427,13 +437,13 @@ input[type="text"]::placeholder { color: var(--dim); }
   opacity: 0;
 }
 .top-card.flash::before { animation: cardFlash .32s ease-out both; }
-.table-info { margin-top: 8px; font-size: 11px; color: var(--muted); }
+.table-info { margin-top: 8px; font-size: calc(11px * var(--fs)); color: var(--muted); }
 .event-log {
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid var(--line);
   width: 100%;
-  font-size: 11px;
+  font-size: calc(11px * var(--fs));
   color: var(--muted);
   text-align: center;
   line-height: 1.6;
@@ -522,7 +532,7 @@ input[type="text"]::placeholder { color: var(--dim); }
   padding: 0 7px;
   height: 16px;
   line-height: 14px;
-  font-size: 10px;
+  font-size: calc(10px * var(--fs));
   border-radius: 20px;
   background: rgba(201, 86, 79, .22);
   border: 1px solid rgba(201, 86, 79, .55);
@@ -543,7 +553,7 @@ input[type="text"]::placeholder { color: var(--dim); }
   top: -8px;
   background: var(--danger);
   color: #fff;
-  font-size: 11px;
+  font-size: calc(11px * var(--fs));
   font-weight: 500;
   border-radius: 20px;
   padding: 2px 7px;
@@ -568,19 +578,19 @@ input[type="text"]::placeholder { color: var(--dim); }
   overflow: hidden;
 }
 .card .rank {
-  font-size: 22px;
+  font-size: calc(22px * var(--fs));
   font-weight: 500;
   line-height: 1;
   font-variant-numeric: tabular-nums;
 }
-.card .suit { font-size: 12px; line-height: 1; color: #7A5C4A; }
+.card .suit { font-size: calc(12px * var(--fs)); line-height: 1; color: #7A5C4A; }
 .card.suit-red .suit { color: #B23A3A; }
 .card .role {
   position: absolute;
   left: 50%;
   bottom: 4px;
   transform: translateX(-50%);
-  font-size: 10px;
+  font-size: calc(10px * var(--fs));
   line-height: 14px;
   padding: 0 6px;
   border-radius: 20px;
@@ -652,7 +662,7 @@ input[type="text"]::placeholder { color: var(--dim); }
   left: 4px;
   box-sizing: border-box;
   width: 19px;
-  font-size: 11px;
+  font-size: calc(11px * var(--fs));
   line-height: 12px;
   /* 下内边距把花色也圈进同一块底板，视觉上是一整块，不是两块小牌 */
   padding: 1px 0 13px;
@@ -668,7 +678,7 @@ input[type="text"]::placeholder { color: var(--dim); }
   left: 4px;
   box-sizing: border-box;
   width: 19px;
-  font-size: 9px;
+  font-size: calc(9px * var(--fs));
   line-height: 11px;
   text-align: center;
   background: rgba(11, 29, 24, .84);
@@ -691,7 +701,7 @@ input[type="text"]::placeholder { color: var(--dim); }
   min-height: 32px;
   border-radius: 20px;
   background: var(--surface);
-  font-size: 13px;
+  font-size: calc(13px * var(--fs));
   color: var(--gold-2);
   text-align: center;
   max-width: 100%;
@@ -703,7 +713,7 @@ input[type="text"]::placeholder { color: var(--dim); }
 /* --- 手牌 --- */
 #handArea { flex: 0 0 auto; padding: 8px 0 4px; }
 .hand-meta {
-  font-size: 11px;
+  font-size: calc(11px * var(--fs));
   color: var(--muted);
   padding: 0 4px 6px;
   min-height: 16px;
@@ -731,7 +741,10 @@ input[type="text"]::placeholder { color: var(--dim); }
   border-color: var(--gold);
   box-shadow: 0 0 0 2px var(--gold);
 }
-.hand .card.disabled { opacity: .5; }
+/* 非自己回合时不可出的牌只做「轻微退后」，别压成灰：
+   用户反馈「非自己回合显得暗」，.5 的半透明是最后一处残留的观感来源。
+   .72 仍明显区别于可出牌（1.0），又不会让整片手牌看上去蒙了一层灰。 */
+.hand .card.disabled { opacity: .72; }
 /* backwards 而不是 both：延迟期间保持起始态（不闪），结束后交还给 .selected 的 transform */
 .hand .card.enter { animation: dealIn .26s cubic-bezier(.22,.61,.36,1) backwards; }
 
@@ -754,7 +767,7 @@ input[type="text"]::placeholder { color: var(--dim); }
 .settle-panel { max-width: 360px; }
 .winner-banner {
   text-align: center;
-  font-size: 18px;
+  font-size: calc(18px * var(--fs));
   font-weight: 500;
   color: var(--gold);
   margin-bottom: 16px;
@@ -767,7 +780,7 @@ input[type="text"]::placeholder { color: var(--dim); }
   padding: 11px 14px;
   border-radius: var(--r-md);
   background: var(--bg-2);
-  font-size: 14px;
+  font-size: calc(14px * var(--fs));
   color: var(--text-2);
 }
 .result-list li.winner {
@@ -775,7 +788,7 @@ input[type="text"]::placeholder { color: var(--dim); }
   border: 1px solid var(--gold);
   color: var(--gold-2);
 }
-.result-list li .pen { color: #E79A95; font-size: 13px; }
+.result-list li .pen { color: #E79A95; font-size: calc(13px * var(--fs)); }
 .result-list li.winner .pen { color: var(--gold-2); }
 
 /* 终局账目脚注：「败牌合计 X + 未发 N = 54」。
@@ -783,7 +796,7 @@ input[type="text"]::placeholder { color: var(--dim); }
    抬到与败牌数同级的字号会和名次抢注意力。空文本时不占位（margin 折叠由下方 .hint 兜住）。 */
 .settle-foot {
   margin: 0 0 12px;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--fs));
   line-height: 1.5;
   color: var(--dim);
   text-align: center;
@@ -791,7 +804,7 @@ input[type="text"]::placeholder { color: var(--dim); }
 .settle-foot:empty { margin: 0; }
 .win-tag {
   display: inline-block;
-  font-size: 11px;
+  font-size: calc(11px * var(--fs));
   line-height: 16px;
   padding: 0 7px;
   border-radius: 20px;
@@ -812,7 +825,7 @@ input[type="text"]::placeholder { color: var(--dim); }
   background: #2A1512;
   border: 1px solid rgba(201,86,79,.5);
   color: #F0B7B3;
-  font-size: 13px;
+  font-size: calc(13px * var(--fs));
   text-align: center;
   z-index: 90;
   animation: fadeUp .18s ease-out both;
@@ -825,7 +838,7 @@ input[type="text"]::placeholder { color: var(--dim); }
   z-index: 100;
   padding: 8px;
   text-align: center;
-  font-size: 12px;
+  font-size: calc(12px * var(--fs));
   background: var(--danger);
   color: #fff;
 }
@@ -1146,10 +1159,10 @@ input[type="text"]::placeholder { color: var(--dim); }
 /* ===== 窄屏微调 ===== */
 @media (max-width: 380px) {
   :root { --card-w: 54px; }   /* 牌与冲击特效一起缩（--fx-card-h 由它推导） */
-  .card .rank { font-size: 19px; }
+  .card .rank { font-size: calc(19px * var(--fs)); }
   .hand { gap: 6px; }
   .seat { width: 74px; }
-  .seat .avatar { width: 38px; height: 38px; font-size: 14px; }
+  .seat .avatar { width: 38px; height: 38px; font-size: calc(14px * var(--fs)); }
   #table { width: 84%; }
 }
 
@@ -1158,4 +1171,121 @@ input[type="text"]::placeholder { color: var(--dim); }
   #table { padding: 10px 10px 8px; --fx-card-top: 10px; } /* 卡牌带上沿必须跟着 padding-top 走 */
   .hand { min-height: 84px; }
   :root { --card-w: 54px; }
+}
+
+/* ============================================================
+ * 明亮主题（2026-11-07 用户反馈：整体太暗，尤其等别人出牌时）
+ *
+ * 默认就是这一套。夜局配色原样保留在上方 :root 里，
+ * 在「设置 → 主题」里切 data-theme="night" 即可回去。
+ *
+ * 配色原则：牌桌不是「把深色反色」，而是换成纸张与暖木的感觉 ——
+ * 米白底、白面板、深琥珀金。金色在白底上必须压深（#E0B45C 在白底上几乎看不见），
+ * 所以 --gold / --gold-2 都换成了深色琥珀，这是两套主题差别最大的一处。
+ * ============================================================ */
+:root[data-theme="light"] {
+  --bg: #F1EDE4;        /* 米白：整体底色 */
+  --bg-2: #FBF8F1;      /* 桌面、输入框底 */
+  --surface: #FFFFFF;   /* 面板、座位头像、提示条 */
+  --surface-2: #EFE9DB; /* 激活态的浅一档 */
+  --line: #E2DACA;
+  --line-2: #CBC1AC;
+
+  --gold: #9C7418;      /* 深琥珀：白底上才读得出 */
+  --gold-2: #8A6414;
+
+  --text: #2B2620;
+  --text-2: #4C4538;
+  --muted: #7C7462;
+  --dim: #948B77;
+
+  --card: #FFFFFF;
+  --card-line: #D9CFBA;
+  --ink: #1B1B1B;
+
+  --danger: #B8453E;
+  --success: #3C8A55;
+}
+
+/* 以下是被写死过颜色的规则，逐个补明亮版。
+   新增规则时请直接用变量，别再往这张表里加行 —— 表越长，说明漏的硬编码越多。 */
+[data-theme="light"] .badge.ready { color: #2F7A46; }
+[data-theme="light"] .badge.ai { background: rgba(90,58,102,.12); color: #6B4A7A; }
+[data-theme="light"] .seat .penalty { color: var(--danger); background: rgba(184,69,62,.10); }
+[data-theme="light"] .dir-flag { color: var(--danger); }
+[data-theme="light"] .result-list li .pen { color: var(--danger); }
+[data-theme="light"] .toast { background: #FDF0EE; color: var(--danger); }
+/* 遮罩：明亮主题下不需要压暗，能看见后面的牌桌反而更有「还没结束」的感觉。
+   .42 在米白桌上偏灰褐，收到 .28 只留一点层次，不让弹窗把整屏拖暗。 */
+[data-theme="light"] .overlay { background: rgba(43,38,32,.28); }
+/* 桌面堆叠厚度：白底上用浅色阴影等于没有，换成暖灰 */
+[data-theme="light"] #table.has-pile #topCard::after {
+  box-shadow: 3px 4px 0 rgba(90,80,60,.18), 6px 8px 0 rgba(90,80,60,.09);
+}
+[data-theme="light"] .turn-timer { background: rgba(43,38,32,.10); }
+
+/* 「轮到你」不靠压暗别人来表达：明亮主题给提示条一圈暖金，
+   等别人出牌时整屏保持同一亮度 —— 这是本次反馈里特别强调的一点。 */
+[data-theme="light"] .prompt-bar { border: 1px solid transparent; }
+[data-theme="light"] #view-game.my-turn .prompt-bar {
+  background: #FFF6E0;
+  border-color: rgba(156,116,24,.35);
+}
+/* 夜局下也补一条同样的提示（原来只有屏幕边缘金光，手机上不够明显） */
+#view-game.my-turn .prompt-bar { font-weight: 500; }
+
+/* ===== 设置面板 ===== */
+.settings-panel { max-width: 340px; }
+.settings-panel h2 { margin-bottom: 12px; }
+.pref-group { margin-bottom: 18px; }
+.pref-group > .pref-label {
+  display: block;
+  font-size: calc(12px * var(--fs));
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.pref-row { display: flex; gap: 8px; }
+.pref-row .btn { flex: 1; min-width: 0; padding: 0 6px; }
+/* 选中态：实心金。不用「打勾」图标，省一套图标字体 */
+.pref-row .btn.on {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: #16241E;
+  font-weight: 600;
+}
+.pref-note {
+  font-size: calc(11.5px * var(--fs));
+  color: var(--dim);
+  line-height: 1.6;
+  margin-top: 10px;
+}
+.pref-sample {
+  border: 1px dashed var(--line-2);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  margin-top: 8px;
+  color: var(--text-2);
+  /* 预览条跟着倍率走，让人不用关面板就知道合不合适 */
+  font-size: calc(14px * var(--fs));
+  line-height: 1.5;
+}
+
+/* ===== 明亮主题补漏：被写死过的「深底配色」在白底上会隐形 =====
+ * 上一张 override 表只补了徽标 / 败牌 / 提示条，漏了两类：
+ *  1) 金底 + 深墨绿字：夜局的 --gold 是亮金 #E0B45C，深字对比度够；
+ *     明亮主题把金压深成 #9C7418，深字就糊在深琥珀上（对比度约 1.5:1）。
+ *     这四处都是主操作按钮 / 选中态 / 名次徽标，必须反过来用浅字。
+ *  2) 深底上用的浅粉 #E79A95：白底上几乎看不见，尤其 .btn.danger 是
+ *     「放弃出牌」的默认态文字。:not(.armed) 是怕盖掉两步确认态的白字。
+ * 放在文件最后，顺序上压过所有基础规则，避免以后有人插规则把特异性翻过去。
+ */
+[data-theme="light"] .btn.primary,
+[data-theme="light"] .seat .crown,
+[data-theme="light"] .win-tag,
+[data-theme="light"] .pref-row .btn.on { color: #FFF8E7; }
+[data-theme="light"] .btn.danger:not(.armed) { color: var(--danger); }
+[data-theme="light"] .badge.offline { color: var(--danger); }
+/* 牌背墨绿斜纹在米白桌面上像一块脏斑，换成暖木色 */
+[data-theme="light"] .card.back {
+  background: repeating-linear-gradient(45deg, #E8DFCC, #E8DFCC 6px, #DCD0B8 6px, #DCD0B8 12px);
 }
