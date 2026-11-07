@@ -119,6 +119,8 @@ CDP 注入 `Object.defineProperty(window,'sessionStorage',{get(){throw new DOMEx
 
 `D:/tmp/ui-verify/report.json`：**19 / 19 PASS、0 FAIL、`consoleErrors: []`、`consoleWarnCount: 2`**，含原显示偏好 12 项回归 + 存储禁用「进房 + 离开房间」两条真实路径 + 修前对照。
 
+**该报告对提交链 `315bfbd..2fed3f9` 整体有效**：这期间的全部提交都只改 `production/qa/` 与 `test/`，`public/` 三文件指纹未变（`index.html c4880574… / 9726B`、`app.js 8b05d922… / 54354B`、`style.css 5c7fdcba… / 43574B`），因此无需重跑真机。
+
 两条 `console.warn` **文本完全相同**，均为 `public/app.js` 的会话存储降级提示（实测 `report.consoleWarns` 两条一字不差，已排除 `app.js` 的视图不一致告警与牌面拉取失败告警）。它们分属场景 B 与场景 E 两个页面：每次页面加载 `sessWarned` 都会重置，各自在「创建房间」时 `sessSet` 失败告警一次。**场景 E 的退房走 `sessRemove`，其 catch 不告警——第二条来自该页面进房时刻，不是退房时刻。** 两者均不计入 error 判定。
 
 ## 四、方法论记录（踩过的坑）
@@ -148,6 +150,9 @@ CDP 注入 `Object.defineProperty(window,'sessionStorage',{get(){throw new DOMEx
    附带的机制事实：e2e 的 `verify.js` 指纹**只覆盖 `public/` 三个文件**，所以「要不要重跑真机」看的是 `public/` 有没有变，改 `test/`、改文档都不触发重跑 —— 但改 `style.css` 一定触发。
 8. **引用 commit hash 前先看该 commit 的 diff。**
    本轮出现过「动画中间帧可能是删断言的原因」这类结论，实际 `dbc4322` 删的是重复用例，与动画无关。看 diff 是一秒钟的事，不看就会把错误因果写进文档。
+9. **谁改了状态谁负责广播更正，不靠对方复读。**
+   本轮两次「版本对不上」都不是有人偷懒没现场读——三方都读了，问题是**读数与对外表述之间有时间差**：`dbee0a7` 提交后，另外两方仍在报「未 commit」，于是各自又复读一遍。
+   **commit、落盘、改配置都是状态变更**：改动人主动发一句「已推进到 X，之前那条作废」的成本，远低于让 N 个人重新核对一遍。缺了这一句，再勤快的现场读数也只能得到「各自正确、彼此矛盾」的结果。
 
 ## 五、未覆盖 / 后续
 
