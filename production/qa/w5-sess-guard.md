@@ -2,7 +2,7 @@
 
 > 范围：`public/app.js` 的 `sessionStorage` 访问加固（任务 `W5-ENG-SESS01` / `W5-QA-SESS01` / `W5-E2E-SESS01`）
 > 基线：HEAD `dbc4322`（`public/app.js` md5 `62b86a9ca2dab5f478bdf6b23e21ef39`）
-> 交付：`public/app.js` md5 `ccfc13cb81e0396b7f295a9aa9c5d0f4` / `test/frontend.test.js` md5 `c060bded27105c9f085e0bb743873ed2`
+> 交付：`public/app.js` md5 `ccfc13cb81e0396b7f295a9aa9c5d0f4` / `test/frontend.test.js` md5 `f6561d8b02fbf59d719fda213908b31c`
 > 判定：**PASS**
 
 ## 一、为什么修
@@ -132,6 +132,8 @@ CDP 注入 `Object.defineProperty(window,'sessionStorage',{get(){throw new DOMEx
    实测（4 张牌、与 class 切换同帧读取）：`0.964638 / 0.926383 / 0.866008 / 0.773617` —— 四张各不相同，正说明它们处在动画的不同进度；同帧 `getAnimations()` 四张全是 `state:"running", name:"dealIn"`。用 `MutationObserver` 在 class 变更同一刻由浏览器自采样，`t=0` 时 `op="0"`、`cls="card has-art disabled enter"`。
    等 `Promise.all(anims.finished)` + `sleep(600)` 后：四张全部 `0.72`（±0.01）。
    `fill` 是 `backwards` 而不是 `both`：动画一结束动画值即被丢弃，`.disabled{.72}` 直接接管，所以运行时读数是精确的 `"0.72"` 而非 `0.7199`。也正因为 `.card` 没有 opacity 的 transition，这个接管是**瞬跳**而非渐变——观感上是「牌落定的那一刻淡下去」。
+   这个 1 帧硬切是**有意保留的取舍**：改 `fill-mode` 会让 opacity 锁死在 keyframe 的 `to` 值 `1.0`（手牌完全不淡，`.disabled{.72}` 与场景 38b 的交叉验证随之失效）；正解是让 `dealIn` 的 `to` 走 CSS 变量、或给 `.disabled` 单独写 keyframes，代价与收益（仅 1 帧）不成比例，故本波不动，仅留档。
+   **`fill-mode` 是跨层耦合的前提**：场景 38b 的静态断言读的是 authored `.72`，它与运行时读数能否逐字符对上取决于 `backwards`。若有人改成 `both`，`npm test` 仍会全绿（静态断言不读运行时），但 38b 与真机读数之间的交叉验证就静默失效了——所以 38b 里加了注释把这条耦合显性化。
    结论：这不是「样式没生效」，是 CSS 层叠的正常行为 —— 任何早于动画结束的读数都落在 0↔1 之间，判定必须等动画结束。
    **注意区分两层，别把这条纪律套到静态断言上**：动画中间帧只影响运行时的 `getComputedStyle` 读数；前端静态断言（场景 38b）读的是 `public/style.css` 的**源码文本**，用正则提取 `.hand .card.disabled` 的声明值，不经过渲染，不存在中间帧，也不需要等待任何东西。`dbc4322` 删除的是与场景 38b **重复的等价断言**（同一 CSS 声明挂两道闸门），与 `dealIn` 动画无关。
 3. **清理脏 `localStorage` 必须在所有 probe 撤销并 reload 之后做。**

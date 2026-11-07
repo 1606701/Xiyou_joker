@@ -1303,6 +1303,12 @@ test('★静态 CSS：明亮主题补漏块还在 —— 金底必须用浅字�
 // 用户反馈「特别是非自己回合的时候」暗沉，亲看截图定位到元凶不是整屏压暗，
 // 而是 .hand .card.disabled 的 opacity 把整片手牌压灰（.5 时明显褪色）。
 // 改动本身很小，但没有护栏就会被顺手改回去，所以把下限钉在这里。
+//
+// 跨层耦合提示（勿删）：运行时读数能与这里的 authored .72 逐字符对上，不是巧合 ——
+// fill-mode 是 backwards（style.css 的 .hand .card.enter，dealIn 动画），动画结束后
+// 动画值被丢弃，.disabled 的 .72 直接生效。若有人把 backwards 改成 both/forwards，
+// npm test 仍会全绿（本断言读的是样式表源码），但运行时会锁死在 keyframes 的 to 值
+// 1.0，e2e 的运行时交叉验证即静默失效 —— 改 fill-mode 前先同步 e2e 复验。
 test('★静态 CSS：非自己回合的手牌不得被压灰（.hand .card.disabled opacity ≥ 0.7）', () => {
   const bare = prefCssBare();
   const hit = bare.match(/\.hand\s+\.card\.disabled\s*\{([^}]*)\}/);
