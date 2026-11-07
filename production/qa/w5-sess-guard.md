@@ -103,9 +103,21 @@ CDP 注入 `Object.defineProperty(window,'sessionStorage',{get(){throw new DOMEx
 
 截图：`session-storage-disabled-room-BEFORE.png` / `session-storage-disabled-room.png`
 
+### 3.5b 真浏览器：离开房间路径
+
+`resetToHome()` 里 `removeItem` 抛会跳过 `showView('view-home')`，实际表现是「退不出房间」。注入 sessionStorage 取属性即抛 → 填昵称 → 创建房间 → 点 `#btnLeave`：
+
+- `#view-room` `hidden=true` `display=none`
+- `#view-home` `hidden=false` `display=flex`
+- 本项 exception = **0**
+
+截图：`session-storage-disabled-leave-room.png`
+
+**诚实边界**：修前版本在 `sessionStorage` 抛时**连房间都进不去**（`roomJoined` 的 `setItem` 先中断），所以 `resetToHome` 的缺陷在修前版本被前置断点遮蔽，**真机无法独立复现**，它只是代码层面的理论隐患。该路径的真机验证只在修后版本成立；修前行为由单测场景 44 覆盖（`FE_APP` 指 HEAD 版时该条红）。
+
 ### 3.6 真浏览器全量
 
-`D:/tmp/ui-verify/report.json`：**18 / 18 PASS、0 FAIL、`consoleErrors: []`、`consoleWarnCount: 1`**，含原显示偏好 12 项回归 + 存储禁用进房 + 修前对照。
+`D:/tmp/ui-verify/report.json`：**19 / 19 PASS、0 FAIL、`consoleErrors: []`、`consoleWarnCount: 2`**，含原显示偏好 12 项回归 + 存储禁用「进房 + 离开房间」两条真实路径 + 修前对照。两条 `console.warn` 都是设计内的首次降级提示（进房 1 条、离开房间 1 条，每个文档生命周期各一次），不计入 error 判定。
 
 ## 四、方法论记录（踩过的坑）
 
@@ -121,6 +133,7 @@ CDP 注入 `Object.defineProperty(window,'sessionStorage',{get(){throw new DOMEx
 
 ## 五、未覆盖 / 后续
 
+- `roomClosed` 的 `clear()` 路径**未做真机验证**（需要另一玩家在场或房主解散房间，流程较重）。该路径目前仅由单测场景 43 覆盖；如需真机证据，可后续补一个双客户端场景。
 - 「`typeof` 提到 `try` 外」的变异**不入库**（工程与 QA 一致决定）：它验证的是产品里不存在的错误实现，入库会变成维护绊脚石。结论留本文档 §3.3。
 - `[data-theme="light"] .overlay` 的 `alpha .28` 目前只有真浏览器实测，无前端静态断言（不在 W4 规格内，可按需补）。
 - `graceTimers.size` 诊断出口 / P2-01 表清理仍无测试覆盖，属长期欠账。
