@@ -117,7 +117,9 @@ CDP 注入 `Object.defineProperty(window,'sessionStorage',{get(){throw new DOMEx
 
 ### 3.6 真浏览器全量
 
-`D:/tmp/ui-verify/report.json`：**19 / 19 PASS、0 FAIL、`consoleErrors: []`、`consoleWarnCount: 2`**，含原显示偏好 12 项回归 + 存储禁用「进房 + 离开房间」两条真实路径 + 修前对照。两条 `console.warn` 都是设计内的首次降级提示（进房 1 条、离开房间 1 条，每个文档生命周期各一次），不计入 error 判定。
+`D:/tmp/ui-verify/report.json`：**19 / 19 PASS、0 FAIL、`consoleErrors: []`、`consoleWarnCount: 2`**，含原显示偏好 12 项回归 + 存储禁用「进房 + 离开房间」两条真实路径 + 修前对照。
+
+两条 `console.warn` **文本完全相同**，均为 `public/app.js` 的会话存储降级提示（实测 `report.consoleWarns` 两条一字不差，已排除 `app.js` 的视图不一致告警与牌面拉取失败告警）。它们分属场景 B 与场景 E 两个页面：每次页面加载 `sessWarned` 都会重置，各自在「创建房间」时 `sessSet` 失败告警一次。**场景 E 的退房走 `sessRemove`，其 catch 不告警——第二条来自该页面进房时刻，不是退房时刻。** 两者均不计入 error 判定。
 
 ## 四、方法论记录（踩过的坑）
 
@@ -133,7 +135,7 @@ CDP 注入 `Object.defineProperty(window,'sessionStorage',{get(){throw new DOMEx
 
 ## 五、未覆盖 / 后续
 
-- `roomClosed` 的 `clear()` 路径**未做真机验证**（需要另一玩家在场或房主解散房间，流程较重）。该路径目前仅由单测场景 43 覆盖；如需真机证据，可后续补一个双客户端场景。
+- `roomClosed` 的 `clear()` 路径**未做真机验证**：该路径仅由单测场景 43 覆盖。决定不补的理由是 `sessClear` 与 `sessRemove` 同构（同样是 `typeof` 守卫 + `try/catch`），而真正的风险路径 `resetToHome → showView('view-home')` 已真机验证；触发房间解散需双端协作，成本高、边际覆盖低。若日后要做全路径真机矩阵，需补一个双客户端场景。
 - 「`typeof` 提到 `try` 外」的变异**不入库**（工程与 QA 一致决定）：它验证的是产品里不存在的错误实现，入库会变成维护绊脚石。结论留本文档 §3.3。
 - `[data-theme="light"] .overlay` 的 `alpha .28` 目前只有真浏览器实测，无前端静态断言（不在 W4 规格内，可按需补）。
 - `graceTimers.size` 诊断出口 / P2-01 表清理仍无测试覆盖，属长期欠账。
